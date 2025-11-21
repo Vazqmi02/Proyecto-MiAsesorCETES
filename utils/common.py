@@ -11,71 +11,36 @@ from statsmodels.tsa.statespace.sarimax import SARIMAX
 import warnings
 warnings.filterwarnings('ignore')
 
-# Importar streamlit para cache (solo si está disponible)
-try:
-    import streamlit as st
-except ImportError:
-    st = None
-
 # Carga de variables de entorno
-load_dotenv(override=True)
+load_dotenv(override=True)  # Para desarrollo local
 
-# Claves API
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+# Claves API - Priorizar secrets de Streamlit Cloud, luego variables de entorno
+def get_secret_or_env(key: str) -> str | None:
+    """Obtiene un secret de Streamlit Cloud o variable de entorno como fallback"""
+    try:
+        import streamlit as st
+        # Intentar acceder a st.secrets (disponible en Streamlit Cloud)
+        if hasattr(st, 'secrets') and key in st.secrets:
+            return st.secrets[key]
+    except (AttributeError, FileNotFoundError, TypeError, KeyError):
+        pass
+    # Fallback a variable de entorno
+    return os.getenv(key)
+
+OPENAI_API_KEY = get_secret_or_env("OPENAI_API_KEY")
+DEEPSEEK_API_KEY = get_secret_or_env("DEEPSEEK_API_KEY")
+BANXICO_API_KEY = get_secret_or_env("BANXICO_API_KEY")
+
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
-BANXICO_API_KEY = os.getenv("BANXICO_API_KEY")
-BANXICO_API = os.getenv("BANXICO_API")  # También soportar BANXICO_API
+# BANXICO_API se eliminó porque no se usa
 
 # Inicializar clientes
 client_openai = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 client_deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL) if DEEPSEEK_API_KEY else None
-client_banxico = OpenAI(api_key=BANXICO_API_KEY)  if BANXICO_API_KEY else None
+# client_banxico se eliminó porque no se usa
 
 
 model_deepseek = "deepseek-chat"
-
-# Diccionario global para almacenar los datos de Banxico
-# Estructura: {
-#     'df_banxico': pd.DataFrame,  # DataFrame con los datos procesados
-#     'fecha_descarga': str,        # Fecha de última descarga (YYYY-MM-DD)
-#     'timestamp': datetime         # Timestamp de la descarga
-# }
-_datos_banxico_cache = {}
-
-def get_datos_banxico_cache():
-    """
-    Obtiene el diccionario de caché de datos de Banxico.
-    Si se usa Streamlit, usa session_state, sino usa un diccionario global.
-    """
-    if st is not None:
-        if 'datos_banxico_cache' not in st.session_state:
-            st.session_state.datos_banxico_cache = {}
-        return st.session_state.datos_banxico_cache
-    else:
-        return _datos_banxico_cache
-
-def obtener_datos_banxico_desde_cache():
-    """
-    Obtiene los datos de Banxico desde el diccionario de caché.
-    Returns:
-        pd.DataFrame or None: DataFrame con los datos si están disponibles, None si no.
-    """
-    cache = get_datos_banxico_cache()
-    if 'df_banxico' in cache and cache['df_banxico'] is not None:
-        return cache['df_banxico']
-    return None
-
-def guardar_datos_banxico_en_cache(df_banxico):
-    """
-    Guarda los datos de Banxico en el diccionario de caché.
-    Args:
-        df_banxico (pd.DataFrame): DataFrame con los datos de Banxico
-    """
-    cache = get_datos_banxico_cache()
-    cache['df_banxico'] = df_banxico
-    cache['fecha_descarga'] = datetime.now().strftime('%Y-%m-%d')
-    cache['timestamp'] = datetime.now()
 
 def get_image_path(filename):
     """Obtiene la ruta de una imagen local"""
@@ -115,15 +80,11 @@ def descarga_bmx_series(series_dict, fechainicio, fechafin):
         pd.DataFrame or None: DataFrame con todas las series concatenadas,
                               o None si no se descargaron datos.
     """
-    # Usar BANXICO_API_KEY o BANXICO_API como alternativa
-    token = BANXICO_API_KEY or BANXICO_API
+    # Usar BANXICO_API_KEY
+    token = BANXICO_API_KEY
     
     if not token:
-        print("Error: La variable de entorno 'BANXICO_API_KEY' o 'BANXICO_API' no está configurada.")
-        print("   Por favor, configura una de estas variables de entorno:")
-        print("   1. Crea un archivo '.env' en la raíz del proyecto")
-        print("   2. Agrega: BANXICO_API_KEY=tu_clave_api_aqui")
-        print("   3. Obtén tu clave en: https://www.banxico.org.mx/SieAPIRest/service/v1/")
+        print("Error: La variable de entorno 'BANXICO_API_KEY' no está configurada.")
         return None
         
     headers = {'Bmx-Token': token}
@@ -175,26 +136,15 @@ def descarga_bmx_series(series_dict, fechainicio, fechafin):
         print("No se descargaron datos.")
         return None
 
-def obtener_datos_banxico(fechainicio='2006-01-01', fechafin=None, forzar_descarga=False):
+def obtener_datos_banxico(fechainicio='2006-01-01', fechafin=None):
     """
     Obtiene y procesa datos de Banxico para CETES y otras series económicas.
-    Los datos se guardan en un diccionario centralizado para evitar descargas repetidas.
-    
     Args:
         fechainicio (str): Fecha de inicio (YYYY-MM-DD). Por defecto '2006-01-01'.
         fechafin (str): Fecha de fin (YYYY-MM-DD). Si es None, usa la fecha actual.
-        forzar_descarga (bool): Si es True, fuerza la descarga aunque ya existan datos en caché.
-    
     Returns:
         pd.DataFrame or None: DataFrame procesado con datos semanales, o None si hay error.
     """
-    # Primero verificar si los datos ya están en el diccionario
-    if not forzar_descarga:
-        df_cache = obtener_datos_banxico_desde_cache()
-        if df_cache is not None and not df_cache.empty:
-            return df_cache
-    
-    # Si no están en caché o se fuerza la descarga, descargar los datos
     if fechafin is None:
         fechafin = datetime.now().strftime('%Y-%m-%d')
     
@@ -243,9 +193,6 @@ def obtener_datos_banxico(fechainicio='2006-01-01', fechafin=None, forzar_descar
             for col in columns_to_ffill:
                 if col in df.columns:
                     df[col] = df[col].ffill()
-            
-            # Guardar en el diccionario de caché antes de retornar
-            guardar_datos_banxico_en_cache(df)
             
             return df
         else:
@@ -329,17 +276,7 @@ def pronostico_sarimax(df, variable_objetivo, exog_cols, periodos_pronostico=30,
                 enforce_invertibility=False
             )
         
-        # Optimizar: reducir maxiter y usar método más rápido
-        # LBFGS es más rápido que el método por defecto
-        try:
-            modelo_ajustado = modelo.fit(disp=False, maxiter=20, method='lbfgs', low_memory=True)
-        except Exception:
-            # Fallback: método por defecto con menos iteraciones
-            try:
-                modelo_ajustado = modelo.fit(disp=False, maxiter=20, low_memory=True)
-            except Exception:
-                # Último fallback con parámetros mínimos
-                modelo_ajustado = modelo.fit(disp=False, maxiter=15)
+        modelo_ajustado = modelo.fit(disp=False, maxiter=50)
         
         # Generar pronóstico
         fecha_fin = y.index[-1]
@@ -421,7 +358,6 @@ def obtener_pronostico_cached(df, variable_objetivo, exog_cols, periodos_pronost
     except Exception as e:
         return None
 
-# Nota: No usar @st.cache_data aquí porque se usa session_state
 def generar_todos_los_pronosticos(df, periodos_pronostico=4):
     """
     Genera pronósticos para todos los plazos de CETES y retorna un diccionario estructurado.
@@ -491,7 +427,7 @@ def generar_todos_los_pronosticos(df, periodos_pronostico=4):
                 cambio_inicial = tasa_pronostico_inicial - tasa_actual
                 cambio_final = tasa_pronostico_final - tasa_actual
                 
-                # Obtener intervalo de confianza completo para todos los períodos
+                # Obtener intervalo de confianza si es posible
                 try:
                     if exog_cols:
                         exog_forecast_df = pd.DataFrame(
@@ -509,38 +445,13 @@ def generar_todos_los_pronosticos(df, periodos_pronostico=4):
                         forecast_obj = modelo_ajustado.get_forecast(steps=periodos_pronostico)
                     
                     pronostico_ci = forecast_obj.conf_int()
-                    
-                    # Asegurar que el índice de conf_int coincida con las fechas
-                    if len(pronostico_ci) != len(fechas_pronostico):
-                        # Si las longitudes no coinciden, ajustar
-                        min_len = min(len(pronostico_ci), len(fechas_pronostico))
-                        pronostico_ci = pronostico_ci.iloc[:min_len]
-                        fechas_ci = fechas_pronostico[:min_len]
-                    else:
-                        fechas_ci = fechas_pronostico
-                    
-                    # Guardar las series completas de intervalos con índice de fechas
-                    limite_inferior_series = pd.Series(
-                        pronostico_ci.iloc[:, 0].values,
-                        index=fechas_ci,
-                        name='limite_inferior'
-                    )
-                    limite_superior_series = pd.Series(
-                        pronostico_ci.iloc[:, 1].values,
-                        index=fechas_ci,
-                        name='limite_superior'
-                    )
-                    limite_inferior = limite_inferior_series.iloc[0]  # Para compatibilidad
-                    limite_superior = limite_superior_series.iloc[0]  # Para compatibilidad
+                    limite_inferior = pronostico_ci.iloc[0, 0]
+                    limite_superior = pronostico_ci.iloc[0, 1]
                     tiene_intervalo = True
-                except Exception as e:
-                    # Si falla, no usar intervalos pero continuar
+                except:
                     tiene_intervalo = False
                     limite_inferior = None
                     limite_superior = None
-                    limite_inferior_series = None
-                    limite_superior_series = None
-                    # No imprimir error para no contaminar la salida
                 
                 # Guardar en diccionario
                 pronosticos_dict[columna] = {
@@ -555,8 +466,6 @@ def generar_todos_los_pronosticos(df, periodos_pronostico=4):
                     'cambio_final': cambio_final,
                     'limite_inferior': limite_inferior,
                     'limite_superior': limite_superior,
-                    'limite_inferior_series': limite_inferior_series if tiene_intervalo else None,
-                    'limite_superior_series': limite_superior_series if tiene_intervalo else None,
                     'tiene_intervalo': tiene_intervalo,
                     'datos_historicos': datos_historicos
                 }

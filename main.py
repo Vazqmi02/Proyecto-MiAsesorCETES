@@ -11,13 +11,12 @@ st.set_page_config(
 
 # Generar pronósticos al inicio de la aplicación
 if "pronosticos_generados" not in st.session_state:
-    with st.spinner("⏳ Cargando base de datos..."):
-        # obtener_datos_banxico() ahora verifica el diccionario automáticamente
+    with st.spinner("⏳ Actualizando base de datos..."):
         df_banxico = obtener_datos_banxico()
         if df_banxico is not None and not df_banxico.empty:
             pronosticos = generar_todos_los_pronosticos(df_banxico, periodos_pronostico=13)  # Máximo de semanas
             st.session_state.pronosticos_generados = pronosticos
-            st.session_state.df_banxico = df_banxico  # Mantener compatibilidad con código existente
+            st.session_state.df_banxico = df_banxico
             st.session_state.pronosticos_listos = True
         else:
             st.session_state.pronosticos_generados = None
@@ -45,7 +44,3 @@ with col2:
     logo_path = get_image_path("Logo.png")
     if logo_path:
         st.image(logo_path, width=250)
-
-
-
-

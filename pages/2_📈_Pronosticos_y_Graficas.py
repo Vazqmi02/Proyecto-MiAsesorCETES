@@ -18,12 +18,19 @@ st.header("📈 Pronósticos y Gráficas de CETES")
 st.markdown("Visualiza pronósticos y análisis de tendencias de CETES.")
 st.divider()
 
-# NO generar pronósticos aquí - deben estar en session_state desde main.py
-# Si no están, mostrar mensaje y no generar para evitar cálculos duplicados
+# Verificar y generar pronósticos si no existen (por si se accede directamente a esta página)
 if "pronosticos_generados" not in st.session_state:
-    st.warning("⚠️ Los pronósticos no están disponibles. Por favor, primero visita la página principal para que se generen los pronósticos.")
-    st.info("💡 Esto asegura que los cálculos solo se hagan una vez y la aplicación sea más rápida.")
-    st.stop()
+    with st.spinner("⏳ Generando pronósticos..."):
+        df_banxico = obtener_datos_banxico()
+        if df_banxico is not None and not df_banxico.empty:
+            pronosticos = generar_todos_los_pronosticos(df_banxico, periodos_pronostico=13)
+            st.session_state.pronosticos_generados = pronosticos
+            st.session_state.df_banxico = df_banxico
+            st.session_state.pronosticos_listos = True
+        else:
+            st.session_state.pronosticos_generados = None
+            st.session_state.df_banxico = None
+            st.session_state.pronosticos_listos = False
 
 # Sidebar para configuraciones
 with st.sidebar:
@@ -57,16 +64,20 @@ mapeo_plazos = {
     "364 días": "CETE_364D"
 }
 
-# Cargar datos de Banxico - usar session_state para evitar recargas
-if "df_banxico" not in st.session_state:
-    with st.spinner("📥 Cargando datos de Banxico..."):
-        df_banxico = obtener_datos_banxico()
-        if df_banxico is not None and not df_banxico.empty:
-            st.session_state.df_banxico = df_banxico
-        else:
-            st.session_state.df_banxico = None
-else:
-    df_banxico = st.session_state.df_banxico
+# Cargar datos de Banxico desde session_state o generar si no existen
+def cargar_datos_banxico():
+    """Carga datos de Banxico desde session_state o los obtiene si no existen"""
+    if 'df_banxico' in st.session_state and st.session_state.df_banxico is not None:
+        return st.session_state.df_banxico
+    else:
+        df = obtener_datos_banxico()
+        if df is not None and not df.empty:
+            st.session_state.df_banxico = df
+        return df
+
+# Cargar datos
+with st.spinner("📥 Descargando datos de Banxico..."):
+    df_banxico = cargar_datos_banxico()
 
 # Sección principal de contenido
 tab1, tab2, tab3 = st.tabs(["📊 Gráficas y Pronósticos", "📉 Estadisticas", "📋 Datos"])
@@ -120,159 +131,273 @@ with tab1:
             st.warning("⚠️ No hay datos suficientes para generar un pronóstico.")
             st.stop()
         
-        # Usar pronósticos pre-generados desde session_state (sin recalcular)
-        pronosticos_dict = st.session_state.get('pronosticos_generados', None)
-        variable_objetivo = mapeo_plazos[plazo_cetes]
-        
-        if not pronosticos_dict or variable_objetivo not in pronosticos_dict:
-            st.warning("⚠️ Los pronósticos no están disponibles. Por favor, recarga la aplicación desde la página principal.")
-            st.stop()
-        
-        # Usar pronóstico pre-generado (sin cálculos adicionales)
-        pronostico_data = pronosticos_dict[variable_objetivo]
-        pronostico_series = pronostico_data['pronostico_series']
-        fechas_pronostico = pronostico_data['fechas_pronostico']
-        limite_inferior_series = pronostico_data.get('limite_inferior_series')
-        limite_superior_series = pronostico_data.get('limite_superior_series')
-        tiene_intervalo = pronostico_data.get('tiene_intervalo', False)
-        
-        # Truncar series si el usuario solicita menos semanas (solo visualización)
-        if len(pronostico_series) > semanas_pronostico:
-            pronostico_series = pronostico_series.iloc[:semanas_pronostico]
-            fechas_pronostico = fechas_pronostico[:semanas_pronostico]
-            if limite_inferior_series is not None and limite_superior_series is not None:
-                limite_inferior_series = limite_inferior_series.iloc[:semanas_pronostico]
-                limite_superior_series = limite_superior_series.iloc[:semanas_pronostico]
-        
-        # Crear gráfica (sin cálculos, solo visualización)
-        fig = go.Figure()
-        
-        # Línea histórica
-        fig.add_trace(go.Scatter(
-            x=df['Fecha'],
-            y=df['Tasa'],
-            mode='lines',
-            name='Histórico',
-            line=dict(color='blue', width=2)
-        ))
-        
-        # Graficar intervalos de confianza PRIMERO si están disponibles (para que el área sombreada funcione)
-        if tiene_intervalo and limite_inferior_series is not None and limite_superior_series is not None:
-            # Obtener valores como arrays
-            try:
-                if hasattr(limite_superior_series, 'values'):
-                    valores_superior = limite_superior_series.values
-                elif isinstance(limite_superior_series, pd.Series):
-                    valores_superior = limite_superior_series.to_numpy()
-                else:
-                    valores_superior = np.array(limite_superior_series)
+        try:
+            # Preparar datos para SARIMAX
+            df_completo = df_banxico.copy()
+            
+            # Definir variables exógenas y variables a predecir
+            exog_cols = [c for c in df_completo.columns if 'CETE' not in c]
+            cetes_cols = [c for c in df_completo.columns if 'CETE' in c]
+            
+            # Variable objetivo según el plazo seleccionado
+            variable_objetivo = mapeo_plazos[plazo_cetes]
+            
+            if variable_objetivo not in cetes_cols:
+                st.error(f"⚠️ La variable {variable_objetivo} no está disponible en los datos.")
+            else:
+                # Usar pronósticos pre-generados desde session_state
+                pronosticos_dict = st.session_state.get('pronosticos_generados', None)
                 
-                if hasattr(limite_inferior_series, 'values'):
-                    valores_inferior = limite_inferior_series.values
-                elif isinstance(limite_inferior_series, pd.Series):
-                    valores_inferior = limite_inferior_series.to_numpy()
+                if pronosticos_dict and variable_objetivo in pronosticos_dict:
+                    # Usar pronóstico pre-generado
+                    pronostico_data = pronosticos_dict[variable_objetivo]
+                    pronostico_series = pronostico_data['pronostico_series']
+                    fechas_pronostico = pronostico_data['fechas_pronostico']
+                    modelo_ajustado = pronostico_data['modelo_ajustado']
+                    
+                    # Si el usuario solicita menos semanas que las generadas, truncar
+                    if len(pronostico_series) > semanas_pronostico:
+                        pronostico_series = pronostico_series.iloc[:semanas_pronostico]
+                        fechas_pronostico = fechas_pronostico[:semanas_pronostico]
                 else:
-                    valores_inferior = np.array(limite_inferior_series)
+                    st.warning("⚠️ Los pronósticos no están disponibles. Por favor, recarga la aplicación desde la página principal.")
+                    pronostico_series = None
+                    fechas_pronostico = None
+                    modelo_ajustado = None
                 
-                # Verificar que tenemos datos válidos y que coinciden con las fechas
-                if len(valores_superior) > 0 and len(valores_inferior) > 0:
-                    # Asegurar que tienen la misma longitud que fechas_pronostico
-                    if len(valores_superior) == len(fechas_pronostico) and len(valores_inferior) == len(fechas_pronostico):
-                        # Límite superior (sin relleno, se agregará primero)
-                        fig.add_trace(go.Scatter(
-                            x=fechas_pronostico,
-                            y=valores_superior,
-                            mode='lines',
-                            name='Límite Superior (95%)',
-                            line=dict(color='rgba(255,0,0,0.3)', width=1.5, dash='dot'),
-                            showlegend=True,
-                            legendgroup="intervalo",
-                            hovertemplate='Límite Superior: %{y:.2f}%<extra></extra>'
-                        ))
+                if pronostico_series is None:
+                    st.error("❌ No se pudo cargar el pronóstico. Verifica que haya suficientes datos históricos.")
+                else:
+                    # Datos históricos
+                    fig = go.Figure()
+                    
+                    # Línea histórica
+                    fig.add_trace(go.Scatter(
+                        x=df['Fecha'],
+                        y=df['Tasa'],
+                        mode='lines',
+                        name='Histórico',
+                        line=dict(color='blue', width=2)
+                    ))
+                    
+                    # Pronóstico con intervalo de confianza (si está disponible)
+                    fig.add_trace(go.Scatter(
+                        x=fechas_pronostico,
+                        y=pronostico_series.values,
+                        mode='lines',
+                        name='Pronóstico',
+                        line=dict(color='red', dash='dash', width=2)
+                    ))
+                    
+                    # Agregar intervalo de confianza si está disponible en los pronósticos pre-generados
+                    if pronosticos_dict and variable_objetivo in pronosticos_dict:
+                        pronostico_data = pronosticos_dict[variable_objetivo]
+                        if pronostico_data.get('tiene_intervalo', False):
+                            # Usar intervalos pre-calculados
+                            limite_inferior = pronostico_data['limite_inferior']
+                            limite_superior = pronostico_data['limite_superior']
                         
-                        # Límite inferior CON área sombreada hacia el superior
-                        fig.add_trace(go.Scatter(
-                            x=fechas_pronostico,
-                            y=valores_inferior,
-                            mode='lines',
-                            name='Límite Inferior (95%)',
-                            line=dict(color='rgba(255,0,0,0.3)', width=1.5, dash='dot'),
-                            fill='tonexty',  # Rellenar hacia la traza anterior (superior)
-                            fillcolor='rgba(255,0,0,0.15)',
-                            showlegend=True,
-                            legendgroup="intervalo",
-                            hovertemplate='Límite Inferior: %{y:.2f}%<extra></extra>'
-                        ))
-            except Exception as e:
-                st.warning(f"⚠️ No se pudieron graficar los intervalos de confianza: {e}")
-        
-        # Pronóstico (se agrega después para que esté visible sobre el área sombreada)
-        fig.add_trace(go.Scatter(
-            x=fechas_pronostico,
-            y=pronostico_series.values,
-            mode='lines',
-            name='Pronóstico',
-            line=dict(color='red', dash='dash', width=2.5)
-        ))
-        
-        fig.update_layout(
-            title=f'Pronóstico de CETES {plazo_cetes} ({semanas_pronostico} semanas)',
-            xaxis_title="Fecha",
-            yaxis_title="Tasa de Interés (%)",
-            hovermode='x unified',
-            legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Métricas del pronóstico (usar datos pre-calculados del diccionario)
-        tasa_actual = pronostico_data['tasa_actual']
-        tasa_pronostico_inicial = pronostico_data['tasa_pronostico_inicial']
-        tasa_pronostico_final = pronostico_data['tasa_pronostico_final']
-        cambio_inicial = pronostico_data['cambio_inicial']
-        cambio_final = pronostico_data['cambio_final']
-        
-        # Si se truncó el pronóstico, ajustar la tasa final
-        if len(pronostico_series) < len(pronostico_data['pronostico_series']):
-            tasa_pronostico_final = pronostico_series.iloc[-1]
-            cambio_final = tasa_pronostico_final - tasa_actual
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Tasa Actual", f"{tasa_actual:.2f}%")
-        with col2:
-            st.metric("Primer Pronóstico", f"{tasa_pronostico_inicial:.2f}%", f"{cambio_inicial:+.2f}pp")
-        with col3:
-            st.metric("Pronóstico Final", f"{tasa_pronostico_final:.2f}%", f"{cambio_final:+.2f}pp")
-        
-        # Recomendación de inversión (usar datos pre-calculados)
-        st.divider()
-        st.subheader("💡 Recomendación de Inversión")
-        
-        CAUTIOUS_THRESHOLD = 0.2  # Umbral para considerar cambios significativos
-        
-        if cambio_inicial > CAUTIOUS_THRESHOLD:
-            recommendation = "🤔 ESPERAR"
-            explanation = f"Se predice un alza significativa en la próxima subasta (> {CAUTIOUS_THRESHOLD:.2f}pp). Esperar podría darte un mayor rendimiento."
-            st.warning(f"**{recommendation}**\n\n{explanation}")
-        elif cambio_inicial < -CAUTIOUS_THRESHOLD:
-            recommendation = "✅ ¡INVERTIR AHORA!"
-            explanation = f"La tasa actual es atractiva. Nuestro modelo predice que podría bajar pronto (< -{CAUTIOUS_THRESHOLD:.2f}pp), ¡asegura este rendimiento!"
-            st.success(f"**{recommendation}**\n\n{explanation}")
-        else:
-            recommendation = "⚖️ INVERTIR (ESTABLE)"
-            explanation = "El cambio previsto es mínimo. Invierte ahora para evitar que tu capital pierda tiempo en efectivo."
-            st.info(f"**{recommendation}**\n\n{explanation}")
-        
-        # Mostrar detalles adicionales
-        with st.expander("📊 Detalles del Análisis"):
-            st.markdown(f"""
-            - **Tasa Actual**: {tasa_actual:.2f}%
-            - **Primer Pronóstico** (próxima subasta): {tasa_pronostico_inicial:.2f}%
-            - **Cambio Esperado**: {cambio_inicial:+.2f} puntos porcentuales
-            - **Umbral de Decisión**: ±{CAUTIOUS_THRESHOLD:.2f} puntos porcentuales
-            - **Recomendación**: {recommendation}
-            """)
+                        # Crear series para los intervalos 
+                        try:
+                            # Intentar obtener intervalos del modelo si están disponibles
+                            exog_cols_forecast = [c for c in df_completo.columns if 'CETE' not in c]
+                            
+                            if exog_cols_forecast:
+                                exog_forecast_df = pd.DataFrame(
+                                    index=fechas_pronostico,
+                                    columns=exog_cols_forecast
+                                )
+                                for col in exog_cols_forecast:
+                                    if col in df_completo.columns:
+                                        exog_forecast_df[col] = df_completo[col].ffill().iloc[-1]
+                                
+                                forecast_obj = modelo_ajustado.get_forecast(
+                                    steps=semanas_pronostico, 
+                                    exog=exog_forecast_df
+                                )
+                            else:
+                                forecast_obj = modelo_ajustado.get_forecast(steps=semanas_pronostico)
+                            
+                            pronostico_ci = forecast_obj.conf_int()
+                            
+                            # Intervalo superior
+                            fig.add_trace(go.Scatter(
+                                x=fechas_pronostico,
+                                y=pronostico_ci.iloc[:, 1],
+                                mode='lines',
+                                name='Límite Superior (95%)',
+                                line=dict(color='rgba(255,0,0,0.3)', width=1),
+                                showlegend=True
+                            ))
+                            
+                            # Intervalo inferior
+                            fig.add_trace(go.Scatter(
+                                x=fechas_pronostico,
+                                y=pronostico_ci.iloc[:, 0],
+                                mode='lines',
+                                name='Límite Inferior (95%)',
+                                line=dict(color='rgba(255,0,0,0.3)', width=1),
+                                fill='tonexty',
+                                fillcolor='rgba(255,0,0,0.1)',
+                                showlegend=True
+                            ))
+                        except Exception as e:
+                            # Si no se pueden obtener intervalos, continuar sin ellos
+                            pass
+                    
+                    fig.update_layout(
+                        title=f'Pronóstico de CETES {plazo_cetes} ({semanas_pronostico} semanas)',
+                        xaxis_title="Fecha",
+                        yaxis_title="Tasa de Interés (%)",
+                        hovermode='x unified',
+                        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Métricas del pronóstico
+                    tasa_actual = df['Tasa'].iloc[-1]
+                    tasa_pronosticada = pronostico_series.iloc[-1]
+                    tasa_pronostico_inicial = pronostico_series.iloc[0]  # Primer pronóstico
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Tasa Actual", f"{tasa_actual:.2f}%")
+                    with col2:
+                        st.metric("Tasa Pronosticada", f"{tasa_pronosticada:.2f}%")
+                    with col3:
+                        cambio = tasa_pronosticada - tasa_actual
+                        st.metric("Cambio Esperado", f"{cambio:+.2f}%")
+                    
+                    # --- LÓGICA DE RECOMENDACIÓN (Cautelosa) ---
+                    st.divider()
+                    st.subheader("💡 Recomendación de Inversión")
+                    
+                    # Umbral para considerar cambios significativos (en puntos porcentuales)
+                    CAUTIOUS_THRESHOLD = 0.2  # 0.2 puntos porcentuales
+                    
+                    # Cambio esperado en la próxima subasta (primer pronóstico vs tasa actual)
+                    change = tasa_pronostico_inicial - tasa_actual
+                    
+                    if change > CAUTIOUS_THRESHOLD:
+                        # Predicción: Alza significativa -> ESPERAR para comprar a mejor tasa
+                        recommendation = "🤔 ESPERAR"
+                        explanation = f"Se predice un alza significativa en la próxima subasta (> {CAUTIOUS_THRESHOLD:.2f}pp). Esperar podría darte un mayor rendimiento."
+                        st.warning(f"**{recommendation}**\n\n{explanation}")
+                    elif change < -CAUTIOUS_THRESHOLD:
+                        # Predicción: Baja significativa -> INVERTIR AHORA para asegurar la tasa actual
+                        recommendation = "✅ ¡INVERTIR AHORA!"
+                        explanation = f"La tasa actual es atractiva. Nuestro modelo predice que podría bajar pronto (< -{CAUTIOUS_THRESHOLD:.2f}pp), ¡asegura este rendimiento!"
+                        st.success(f"**{recommendation}**\n\n{explanation}")
+                    else:
+                        # Predicción: Estable o cambio menor -> INVERTIR por defecto
+                        recommendation = "⚖️ INVERTIR (ESTABLE)"
+                        explanation = "El cambio previsto es mínimo. Invierte ahora para evitar que tu capital pierda tiempo en efectivo."
+                        st.info(f"**{recommendation}**\n\n{explanation}")
+                    
+                    # Mostrar detalles adicionales
+                    with st.expander("📊 Detalles del Análisis"):
+                        st.markdown(f"""
+                        - **Tasa Actual**: {tasa_actual:.2f}%
+                        - **Primer Pronóstico** (próxima subasta): {tasa_pronostico_inicial:.2f}%
+                        - **Cambio Esperado**: {change:+.2f} puntos porcentuales
+                        - **Umbral de Decisión**: ±{CAUTIOUS_THRESHOLD:.2f} puntos porcentuales
+                        - **Recomendación**: {recommendation}
+                        """)
+                
+                    
+        except Exception as e:
+            st.error(f"❌ Error al generar pronóstico: {str(e)}")
+            st.info("💡 Intentando con método de respaldo...")
+            
+            # Método de respaldo simple
+            fecha_fin_historico = df['Fecha'].max()
+            # Crear fechas semanales para el pronóstico
+            fechas_pronostico = pd.date_range(
+                start=fecha_fin_historico + timedelta(weeks=1),
+                periods=semanas_pronostico,
+                freq='W-THU'
+            )
+            tasa_actual = df['Tasa'].iloc[-1]
+            
+            if len(df) > 10:
+                tendencia = (df['Tasa'].iloc[-1] - df['Tasa'].iloc[-10]) / 10
+                pronostico = [tasa_actual + tendencia * (i + 1) for i in range(semanas_pronostico)]
+            else:
+                pronostico = [tasa_actual] * semanas_pronostico
+            
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=df['Fecha'],
+                y=df['Tasa'],
+                mode='lines',
+                name='Histórico',
+                line=dict(color='blue')
+            ))
+            fig.add_trace(go.Scatter(
+                x=fechas_pronostico,
+                y=pronostico,
+                mode='lines',
+                name='Pronóstico (Respaldo)',
+                line=dict(color='red', dash='dash')
+            ))
+            fig.update_layout(
+                title=f'Pronóstico de CETES {plazo_cetes} ({semanas_pronostico} semanas)',
+                xaxis_title="Fecha",
+                yaxis_title="Tasa de Interés (%)",
+                hovermode='x unified'
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Métricas y recomendaciones del método de respaldo
+            tasa_pronosticada_respaldo = pronostico[-1]
+            tasa_pronostico_inicial_respaldo = pronostico[0]
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Tasa Actual", f"{tasa_actual:.2f}%")
+            with col2:
+                st.metric("Tasa Pronosticada", f"{tasa_pronosticada_respaldo:.2f}%")
+            with col3:
+                cambio_respaldo = tasa_pronosticada_respaldo - tasa_actual
+                st.metric("Cambio Esperado", f"{cambio_respaldo:+.2f}%")
+            
+            # --- LÓGICA DE RECOMENDACIÓN (Cautelosa) - Método de Respaldo ---
+            st.divider()
+            st.subheader("💡 Recomendación de Inversión")
+            
+            # Umbral para considerar cambios significativos (en puntos porcentuales)
+            CAUTIOUS_THRESHOLD = 0.2  # 0.2 puntos porcentuales
+            
+            # Cambio esperado en la próxima subasta (primer pronóstico vs tasa actual)
+            change_respaldo = tasa_pronostico_inicial_respaldo - tasa_actual
+            
+            if change_respaldo > CAUTIOUS_THRESHOLD:
+                # Predicción: Alza significativa -> ESPERAR para comprar a mejor tasa
+                recommendation = "🤔 ESPERAR"
+                explanation = f"Se predice un alza significativa en la próxima subasta (> {CAUTIOUS_THRESHOLD:.2f}pp). Esperar podría darte un mayor rendimiento."
+                st.warning(f"**{recommendation}**\n\n{explanation}")
+            elif change_respaldo < -CAUTIOUS_THRESHOLD:
+                # Predicción: Baja significativa -> INVERTIR AHORA para asegurar la tasa actual
+                recommendation = "✅ ¡INVERTIR AHORA!"
+                explanation = f"La tasa actual es atractiva. Nuestro modelo predice que podría bajar pronto (< -{CAUTIOUS_THRESHOLD:.2f}pp), ¡asegura este rendimiento!"
+                st.success(f"**{recommendation}**\n\n{explanation}")
+            else:
+                # Predicción: Estable o cambio menor -> INVERTIR por defecto
+                recommendation = "⚖️ INVERTIR (ESTABLE)"
+                explanation = "El cambio previsto es mínimo. Invierte ahora para evitar que tu capital pierda tiempo en efectivo."
+                st.info(f"**{recommendation}**\n\n{explanation}")
+            
+            # Mostrar detalles adicionales
+            with st.expander("📊 Detalles del Análisis"):
+                st.markdown(f"""
+                - **Tasa Actual**: {tasa_actual:.2f}%
+                - **Primer Pronóstico** (próxima subasta): {tasa_pronostico_inicial_respaldo:.2f}%
+                - **Cambio Esperado**: {change_respaldo:+.2f} puntos porcentuales
+                - **Umbral de Decisión**: ±{CAUTIOUS_THRESHOLD:.2f} puntos porcentuales
+                - **Recomendación**: {recommendation}
+                - **Nota**: Usando método de pronóstico de respaldo basado en tendencia histórica.
+                """)
     
     elif tipo_visualizacion == "Comparativa":
         # Comparativa entre diferentes plazos - Tendencias históricas
@@ -335,10 +460,7 @@ with tab1:
                 st.warning("⚠️ No hay datos suficientes para mostrar la comparativa de tendencias.")
         else:
             st.error("❌ No se pudieron cargar los datos de Banxico. Verifica que la variable de entorno 'BANXICO_API_KEY' o 'BANXICO_API' esté configurada correctamente.")
-            st.info("�� **Instrucciones**: \n"
-                    "1. Crea un archivo `.env` en la raíz del proyecto\n"
-                    "2. Agrega tu clave de API: `BANXICO_API_KEY=tu_clave_aqui`\n"
-                    "3. Obtén tu clave en: https://www.banxico.org.mx/SieAPIRest/service/v1/")
+
 
 with tab2:
     st.subheader("Análisis de Pronósticos")
@@ -560,5 +682,3 @@ with tab3:
                 file_name=f"cetes_{plazo_cetes.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv"
             )
-
-

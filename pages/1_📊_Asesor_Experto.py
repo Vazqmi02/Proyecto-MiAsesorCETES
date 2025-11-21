@@ -26,12 +26,19 @@ st.header("💡 Asesor Experto en CETES")
 st.markdown("Chatea con un experto en CETES, Banxico e inflación.")
 st.divider()
 
-# NO generar pronósticos aquí - deben estar en session_state desde main.py
-# Si no están, mostrar mensaje y no generar para evitar cálculos duplicados
+# Verificar y generar pronósticos si no existen (por si se accede directamente a esta página)
 if "pronosticos_generados" not in st.session_state:
-    st.warning("⚠️ Los pronósticos no están disponibles. Por favor, primero visita la página principal para que se generen los pronósticos.")
-    st.info("💡 Esto asegura que los cálculos solo se hagan una vez y la aplicación sea más rápida.")
-    st.stop()
+    with st.spinner("⏳ Generando pronósticos..."):
+        df_banxico = obtener_datos_banxico()
+        if df_banxico is not None and not df_banxico.empty:
+            pronosticos = generar_todos_los_pronosticos(df_banxico, periodos_pronostico=13)
+            st.session_state.pronosticos_generados = pronosticos
+            st.session_state.df_banxico = df_banxico
+            st.session_state.pronosticos_listos = True
+        else:
+            st.session_state.pronosticos_generados = None
+            st.session_state.df_banxico = None
+            st.session_state.pronosticos_listos = False
 
 # Cargar el prompt base del sistema
 SYSTEM_PROMPT_BASE = cetes_prompt
@@ -163,58 +170,23 @@ if user_input is None and audio is not None and len(audio) > 0:
         # Transcribir audio usando OpenAI Whisper
         with st.spinner("🎤 Transcribiendo audio..."):
             if client_openai:
-                try:
-                    with open(audio_path, "rb") as audio_file:
-                        transcript = client_openai.audio.transcriptions.create(
-                            model="whisper-1",  # Usar whisper-1 como modelo estándar
-                            file=audio_file,
-                            language="es"
-                        )
-                    user_input = transcript.text
-                except Exception as api_error:
-                    error_msg = str(api_error)
-                    # Verificar si es un error de API key
-                    if "401" in error_msg or "invalid_api_key" in error_msg.lower() or "Incorrect API key" in error_msg:
-                        st.error("❌ **Error: API Key de OpenAI inválida o expirada**")
-                        st.info("""
-                        **💡 Solución:**
-                        1. Verifica que tu API key de OpenAI sea válida
-                        2. Puedes obtener una nueva clave en: https://platform.openai.com/account/api-keys
-                        3. Actualiza el archivo `.env` con tu nueva clave:
-                           ```
-                           OPENAI_API_KEY=tu_nueva_clave_aqui
-                           ```
-                        4. Reinicia la aplicación
-                        """)
-                        # Limpiar archivo temporal antes de salir
-                        if os.path.exists(audio_path):
-                            os.unlink(audio_path)
-                        raise
-                    else:
-                        # Otro tipo de error
-                        raise
+                with open(audio_path, "rb") as audio_file:
+                    transcript = client_openai.audio.transcriptions.create(
+                        model="gpt-4o-mini-transcribe",
+                        file=audio_file,
+                        language="es"
+                    )
+                user_input = transcript.text
             else:
-                st.error("❌ **API Key de OpenAI no configurada**")
-                st.info("""
-                **💡 Para habilitar la transcripción de audio:**
-                1. Obtén tu API key en: https://platform.openai.com/account/api-keys
-                2. Agrega la clave al archivo `.env`:
-                   ```
-                   OPENAI_API_KEY=tu_clave_aqui
-                   ```
-                3. Reinicia la aplicación
-                """)
+                st.error("❌ API Key de OpenAI no configurada para transcripción")
         
         # Limpiar archivo temporal
         if os.path.exists(audio_path):
             os.unlink(audio_path)
         
     except Exception as e:
-        # Solo mostrar error genérico si no se mostró un error específico arriba
-        error_msg = str(e)
-        if "401" not in error_msg and "invalid_api_key" not in error_msg.lower():
-            st.error(f"❌ Error al transcribir audio: {e}")
-            st.info("💡 Tip: Asegúrate de tener permisos de micrófono y que el audio esté en formato compatible.")
+        st.error(f"❌ Error al transcribir audio: {e}")
+        st.info("💡 Tip: Asegúrate de tener permisos de micrófono y que el audio esté en formato compatible.")
 
 # Obtener nueva entrada del usuario (texto o voz)
 if user_input:
@@ -255,7 +227,7 @@ if user_input:
                 with st.spinner("🔊 Generando audio..."):
                     # Generar audio usando OpenAI TTS
                     tts_response = client_openai.audio.speech.create(
-                        model="tts-1",  # Usar modelo TTS estándar
+                        model="gpt-4o-mini-tts",
                         voice="shimmer",
                         input=assistant_response,
                         speed=1.25
