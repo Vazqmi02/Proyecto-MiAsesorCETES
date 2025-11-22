@@ -20,29 +20,34 @@ st.divider()
 
 # Verificar y generar pronósticos si no existen (por si se accede directamente a esta página)
 if "pronosticos_generados" not in st.session_state:
-    try:
-        with st.spinner("⏳ Generando pronósticos..."):
-            df_banxico = obtener_datos_banxico()
-            if df_banxico is not None and not df_banxico.empty:
-                try:
-                    pronosticos = generar_todos_los_pronosticos(df_banxico, periodos_pronostico=13)
-                    st.session_state.pronosticos_generados = pronosticos
+    if "cargando_datos" not in st.session_state:
+        st.session_state.cargando_datos = True
+        try:
+            with st.spinner("⏳ Cargando datos de Banxico..."):
+                df_banxico = obtener_datos_banxico()
+                if df_banxico is not None and not df_banxico.empty:
                     st.session_state.df_banxico = df_banxico
-                    st.session_state.pronosticos_listos = True
-                except Exception as pronostico_error:
-                    # Si falla la generación de pronósticos, continuar sin ellos
+                    with st.spinner("⏳ Generando pronósticos (esto puede tardar unos minutos)..."):
+                        try:
+                            # Reducir periodos iniciales para acelerar
+                            pronosticos = generar_todos_los_pronosticos(df_banxico, periodos_pronostico=4)
+                            st.session_state.pronosticos_generados = pronosticos
+                            st.session_state.pronosticos_listos = True
+                        except Exception as pronostico_error:
+                            # Si falla la generación de pronósticos, continuar sin ellos
+                            st.session_state.pronosticos_generados = None
+                            st.session_state.pronosticos_listos = False
+                else:
                     st.session_state.pronosticos_generados = None
-                    st.session_state.df_banxico = df_banxico
+                    st.session_state.df_banxico = None
                     st.session_state.pronosticos_listos = False
-            else:
-                st.session_state.pronosticos_generados = None
-                st.session_state.df_banxico = None
-                st.session_state.pronosticos_listos = False
-    except Exception as e:
-        # Manejo de error general
-        st.session_state.pronosticos_generados = None
-        st.session_state.df_banxico = None
-        st.session_state.pronosticos_listos = False
+        except Exception as e:
+            # Manejo de error general
+            st.session_state.pronosticos_generados = None
+            st.session_state.df_banxico = None
+            st.session_state.pronosticos_listos = False
+        finally:
+            st.session_state.cargando_datos = False
 
 # Sidebar para configuraciones
 with st.sidebar:

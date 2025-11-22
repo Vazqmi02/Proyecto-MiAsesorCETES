@@ -10,6 +10,11 @@ headless = true
 port = 8501
 enableCORS = true
 enableXsrfProtection = true
+runOnSave = false
+
+[server.fileWatcherType]
+# Deshabilitar file watcher para mejorar rendimiento en Streamlit Cloud
+type = "none"
 
 [browser]
 gatherUsageStats = false

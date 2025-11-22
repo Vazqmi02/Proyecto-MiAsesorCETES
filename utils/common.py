@@ -171,7 +171,8 @@ def descarga_bmx_series(series_dict, fechainicio, fechafin):
         url = f'https://www.banxico.org.mx/SieAPIRest/service/v1/series/{serie}/datos/{fechainicio}/{fechafin}/'
         
         try:
-            response = requests.get(url, headers=headers)
+            # Agregar timeout para evitar que la aplicación se cuelgue
+            response = requests.get(url, headers=headers, timeout=(10, 30))  # 10s conexión, 30s lectura
             if response.status_code != 200:
                 continue
             raw_data = response.json()
@@ -196,7 +197,8 @@ def descarga_bmx_series(series_dict, fechainicio, fechafin):
                     # Solo mantiene la columna con el nombre de la serie
                     all_data.append(df[[nombre]])
                 
-        except requests.exceptions.RequestException:
+        except (requests.exceptions.RequestException, requests.exceptions.Timeout) as e:
+            # Log del error pero continuar con otras series
             continue
     # Concatena todos los DataFrames
     if all_data:
@@ -217,6 +219,21 @@ def obtener_datos_banxico(fechainicio='2006-01-01', fechafin=None):
     """
     if fechafin is None:
         fechafin = datetime.now().strftime('%Y-%m-%d')
+    
+    # Optimización: Limitar el rango de fechas para acelerar la descarga inicial
+    # Si se solicita un rango muy grande, limitar a los últimos 5 años para la primera carga
+    try:
+        fecha_inicio_dt = pd.to_datetime(fechainicio)
+        fecha_fin_dt = pd.to_datetime(fechafin)
+        dias_diferencia = (fecha_fin_dt - fecha_inicio_dt).days
+        
+        # Si el rango es mayor a 5 años, limitar a los últimos 5 años
+        if dias_diferencia > 365 * 5:
+            fecha_inicio_optimizada = (fecha_fin_dt - pd.Timedelta(days=365 * 5)).strftime('%Y-%m-%d')
+            fechainicio = fecha_inicio_optimizada
+    except:
+        # Si hay error al procesar fechas, usar el valor original
+        pass
     
     # Definición de las series de Banxico a descargar
     series = {
@@ -344,7 +361,8 @@ def pronostico_sarimax(df, variable_objetivo, exog_cols, periodos_pronostico=30,
                 enforce_invertibility=False
             )
         
-        modelo_ajustado = modelo.fit(disp=False, maxiter=50)
+        # Reducir maxiter para acelerar el ajuste y evitar timeouts
+        modelo_ajustado = modelo.fit(disp=False, maxiter=20)
         
         # Generar pronóstico
         fecha_fin = y.index[-1]
