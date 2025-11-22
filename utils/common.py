@@ -1,5 +1,4 @@
 import os
-from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
 import base64
@@ -11,45 +10,124 @@ from statsmodels.tsa.statespace.sarimax import SARIMAX
 import warnings
 warnings.filterwarnings('ignore')
 
-# Carga de variables de entorno
-load_dotenv(override=True)  # Para desarrollo local
+# Carga de variables de entorno (solo para desarrollo local)
+try:
+    load_dotenv(override=True)
+except Exception:
+    # En Streamlit Cloud no hay archivo .env, ignorar error silenciosamente
+    pass
 
 # Claves API - Priorizar secrets de Streamlit Cloud, luego variables de entorno
 def get_secret_or_env(key: str) -> str | None:
     """Obtiene un secret de Streamlit Cloud o variable de entorno como fallback"""
+    # Primero intentar con st.secrets (disponible en Streamlit Cloud y local)
     try:
         import streamlit as st
-        # Intentar acceder a st.secrets (disponible en Streamlit Cloud)
-        if hasattr(st, 'secrets') and key in st.secrets:
-            return st.secrets[key]
-    except (AttributeError, FileNotFoundError, TypeError, KeyError):
+        # Verificar si st.secrets está disponible y tiene la clave
+        if hasattr(st, 'secrets') and st.secrets is not None:
+            try:
+                # Intentar acceso directo a st.secrets[key]
+                if key in st.secrets:
+                    value = st.secrets[key]
+                    # Asegurar que el valor es string y no está vacío
+                    if value and isinstance(value, str):
+                        return value
+                    elif value:
+                        return str(value)
+            except (TypeError, KeyError, AttributeError):
+                pass
+            except Exception:
+                # En Streamlit Cloud, los secrets pueden estar en formato diferente
+                pass
+    except (ImportError, AttributeError, RuntimeError):
+        # Streamlit no está inicializado aún, continuar con fallback
         pass
+    
     # Fallback a variable de entorno
-    return os.getenv(key)
-
-OPENAI_API_KEY = get_secret_or_env("OPENAI_API_KEY")
-DEEPSEEK_API_KEY = get_secret_or_env("DEEPSEEK_API_KEY")
-BANXICO_API_KEY = get_secret_or_env("BANXICO_API_KEY")
-
-DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
-# BANXICO_API se eliminó porque no se usa
-
-# Inicializar clientes
-client_openai = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
-client_deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL) if DEEPSEEK_API_KEY else None
-# client_banxico se eliminó porque no se usa
-
-
-model_deepseek = "deepseek-chat"
-
-def get_image_path(filename):
-    """Obtiene la ruta de una imagen local"""
-    image_dir = Path("images")
-    if image_dir.exists():
-        image_path = image_dir / filename
-        if image_path.exists():
-            return str(image_path)
+    env_value = os.getenv(key)
+    if env_value:
+        return env_value
+    
+    # Último fallback: intentar con nombre alternativo común
+    if key == "BANXICO_API_KEY":
+        env_value = os.getenv("BANXICO_API")
+        if env_value:
+            return env_value
+    
     return None
+
+# Funciones para obtener las claves (se llaman dinámicamente cuando se necesitan)
+def _get_openai_api_key() -> str | None:
+    """Obtiene la clave API de OpenAI"""
+    return get_secret_or_env("OPENAI_API_KEY")
+
+def _get_banxico_api_key() -> str | None:
+    """Obtiene la clave API de Banxico"""
+    return get_secret_or_env("BANXICO_API_KEY")
+
+# Variables globales (se inicializan cuando se acceden)
+_client_openai_cache = None
+
+def _get_client_openai():
+    """Obtiene el cliente de OpenAI, inicializándolo si es necesario"""
+    global _client_openai_cache
+    
+    # Si ya tenemos un cliente cacheado, devolverlo
+    if _client_openai_cache is not None:
+        return _client_openai_cache
+    
+    # Obtener la clave API
+    api_key = _get_openai_api_key()
+    
+    if not api_key:
+        return None
+    
+    try:
+        _client_openai_cache = OpenAI(api_key=api_key)
+        return _client_openai_cache
+    except Exception:
+        return None
+
+# Clase proxy para acceso lazy a claves API y cliente
+class _LazyProxy:
+    """Proxy para acceso lazy a variables que dependen de Streamlit"""
+    def __init__(self, getter_func):
+        self._getter = getter_func
+        self._cache = None
+    
+    def _get_value(self):
+        if self._cache is None:
+            self._cache = self._getter()
+        return self._cache
+    
+    def __bool__(self):
+        return self._get_value() is not None
+    
+    def __str__(self):
+        val = self._get_value()
+        return str(val) if val else ""
+    
+    def __call__(self):
+        return self._get_value()
+    
+    def __getattr__(self, name):
+        val = self._get_value()
+        if val is None:
+            raise AttributeError(f"No se puede acceder a {name}: valor no disponible")
+        return getattr(val, name)
+    
+    def __eq__(self, other):
+        return self._get_value() == other
+    
+    def __ne__(self, other):
+        return self._get_value() != other
+
+# Variables para compatibilidad con código existente
+OPENAI_API_KEY = _LazyProxy(_get_openai_api_key)
+BANXICO_API_KEY = _LazyProxy(_get_banxico_api_key)
+client_openai = _LazyProxy(_get_client_openai)
+
+
 
 def audio_player_with_speed(audio_bytes, playback_speed=1.25):
     """Crea un reproductor de audio con velocidad de reproducción personalizada"""
@@ -80,11 +158,10 @@ def descarga_bmx_series(series_dict, fechainicio, fechafin):
         pd.DataFrame or None: DataFrame con todas las series concatenadas,
                               o None si no se descargaron datos.
     """
-    # Usar BANXICO_API_KEY
-    token = BANXICO_API_KEY
+    # Usar BANXICO_API_KEY (obtener el valor real)
+    token = _get_banxico_api_key()
     
     if not token:
-        print("Error: La variable de entorno 'BANXICO_API_KEY' no está configurada.")
         return None
         
     headers = {'Bmx-Token': token}
@@ -96,7 +173,6 @@ def descarga_bmx_series(series_dict, fechainicio, fechafin):
         try:
             response = requests.get(url, headers=headers)
             if response.status_code != 200:
-                print(f'Error en la consulta para la serie **{nombre}** ({serie}), código **{response.status_code}**')
                 continue
             raw_data = response.json()
             # Verifica la estructura del JSON y si contiene datos
@@ -118,14 +194,9 @@ def descarga_bmx_series(series_dict, fechainicio, fechafin):
                     df.rename(columns={'dato': nombre}, inplace=True)
                     
                     # Solo mantiene la columna con el nombre de la serie
-                    all_data.append(df[[nombre]]) 
-                else:
-                    print(f"No se encontraron datos en el campo 'datos' para la serie **{nombre}** ({serie})")
-            else:
-                print(f"Estructura inesperada o datos faltantes para la serie **{nombre}** ({serie})")
+                    all_data.append(df[[nombre]])
                 
-        except requests.exceptions.RequestException as e:
-            print(f"Error de conexión o petición para la serie **{nombre}** ({serie}): {e}")
+        except requests.exceptions.RequestException:
             continue
     # Concatena todos los DataFrames
     if all_data:
@@ -133,7 +204,6 @@ def descarga_bmx_series(series_dict, fechainicio, fechafin):
         df_final = pd.concat(all_data, axis=1, join='outer') 
         return df_final
     else:
-        print("No se descargaron datos.")
         return None
 
 def obtener_datos_banxico(fechainicio='2006-01-01', fechafin=None):
@@ -196,10 +266,8 @@ def obtener_datos_banxico(fechainicio='2006-01-01', fechafin=None):
             
             return df
         else:
-            print("No hay datos válidos en la serie 'CETE_28D' para crear el índice semanal.")
             return None
     else:
-        print("La serie 'CETE_28D' no se descargó correctamente para crear el índice semanal.")
         return None
 
 def pronostico_sarimax(df, variable_objetivo, exog_cols, periodos_pronostico=30, 
@@ -320,43 +388,6 @@ def pronostico_sarimax(df, variable_objetivo, exog_cols, periodos_pronostico=30,
         
     except Exception as e:
         raise Exception(f"Error al generar pronóstico SARIMAX: {str(e)}")
-
-def obtener_pronostico_cached(df, variable_objetivo, exog_cols, periodos_pronostico=4):
-    """
-    Genera un pronóstico SARIMAX con cache para evitar recalcular el modelo.
-    Esta función está diseñada para ser usada con @st.cache_data en Streamlit.
-    
-    Args:
-        df (pd.DataFrame): DataFrame con datos históricos de Banxico
-        variable_objetivo (str): Nombre de la columna a predecir (ej: 'CETE_91D')
-        exog_cols (list): Lista de columnas exógenas
-        periodos_pronostico (int): Número de períodos a pronosticar
-    
-    Returns:
-        tuple: (pronostico_series, fechas_pronostico, modelo_ajustado) o None si hay error
-    """
-    try:
-        if df is None or df.empty:
-            return None
-        
-        if variable_objetivo not in df.columns:
-            return None
-        
-        datos_historicos = df[variable_objetivo].dropna()
-        if len(datos_historicos) < 52:
-            return None
-        
-        # Generar pronóstico
-        pronostico_series, fechas_pronostico, modelo_ajustado = pronostico_sarimax(
-            df=df,
-            variable_objetivo=variable_objetivo,
-            exog_cols=exog_cols,
-            periodos_pronostico=periodos_pronostico
-        )
-        
-        return pronostico_series, fechas_pronostico, modelo_ajustado
-    except Exception as e:
-        return None
 
 def generar_todos_los_pronosticos(df, periodos_pronostico=4):
     """

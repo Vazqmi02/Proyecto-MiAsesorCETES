@@ -60,6 +60,42 @@ Siempre ofrece una **plantilla de análisis** si la solicita.
 
 
 # ============================================
+# Sección de Pronósticos SARIMAX
+# Formato para incluir pronósticos cuando están disponibles
+# ============================================
+def generar_seccion_pronosticos(resumen_pronosticos: str = None, max_semanas: int = 13) -> str:
+    """
+    Genera la sección de pronósticos SARIMAX para incluir en el prompt del sistema.
+    
+    Args:
+        resumen_pronosticos (str, optional): Resumen formateado de los pronósticos
+        max_semanas (int): Número máximo de semanas disponibles (default: 13)
+    
+    Returns:
+        str: Sección de pronósticos formateada o mensaje de advertencia si no hay pronósticos
+    """
+    if resumen_pronosticos:
+        seccion = "\n\n"
+        seccion += "=" * 60 + "\n"
+        seccion += "📊 DATOS DE PRONÓSTICOS SARIMAX DISPONIBLES\n"
+        seccion += "=" * 60 + "\n"
+        seccion += "\n"
+        seccion += "Tienes acceso a pronósticos generados por el modelo SARIMAX para todos los plazos de CETES.\n"
+        seccion += f"Los pronósticos están disponibles hasta {max_semanas} semanas en el futuro. Puedes responder preguntas sobre\n"
+        seccion += "cualquier semana dentro de este rango (semana 1, semana 2, hasta semana 13).\n"
+        seccion += "Usa estos datos para responder preguntas sobre tendencias futuras, recomendaciones de inversión\n"
+        seccion += "y análisis de pronósticos. SIEMPRE menciona que estos son pronósticos basados en modelos estadísticos\n"
+        seccion += "y que no garantizan resultados futuros.\n"
+        seccion += "\n"
+        seccion += resumen_pronosticos
+        seccion += "\n"
+        seccion += "=" * 60 + "\n"
+        return seccion
+    else:
+        return "\n\n⚠️ NOTA: Los pronósticos SARIMAX no están disponibles en este momento.\nPuedes responder preguntas generales sobre CETES, pero no tienes acceso a pronósticos específicos.\n"
+
+
+# ============================================
 # Assembly + Single Source of Truth
 # Ensambla las secciones en un único string; fácil de mantener y versionar.
 # ============================================

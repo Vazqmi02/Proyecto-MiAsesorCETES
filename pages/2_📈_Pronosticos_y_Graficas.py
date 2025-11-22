@@ -20,17 +20,29 @@ st.divider()
 
 # Verificar y generar pronósticos si no existen (por si se accede directamente a esta página)
 if "pronosticos_generados" not in st.session_state:
-    with st.spinner("⏳ Generando pronósticos..."):
-        df_banxico = obtener_datos_banxico()
-        if df_banxico is not None and not df_banxico.empty:
-            pronosticos = generar_todos_los_pronosticos(df_banxico, periodos_pronostico=13)
-            st.session_state.pronosticos_generados = pronosticos
-            st.session_state.df_banxico = df_banxico
-            st.session_state.pronosticos_listos = True
-        else:
-            st.session_state.pronosticos_generados = None
-            st.session_state.df_banxico = None
-            st.session_state.pronosticos_listos = False
+    try:
+        with st.spinner("⏳ Generando pronósticos..."):
+            df_banxico = obtener_datos_banxico()
+            if df_banxico is not None and not df_banxico.empty:
+                try:
+                    pronosticos = generar_todos_los_pronosticos(df_banxico, periodos_pronostico=13)
+                    st.session_state.pronosticos_generados = pronosticos
+                    st.session_state.df_banxico = df_banxico
+                    st.session_state.pronosticos_listos = True
+                except Exception as pronostico_error:
+                    # Si falla la generación de pronósticos, continuar sin ellos
+                    st.session_state.pronosticos_generados = None
+                    st.session_state.df_banxico = df_banxico
+                    st.session_state.pronosticos_listos = False
+            else:
+                st.session_state.pronosticos_generados = None
+                st.session_state.df_banxico = None
+                st.session_state.pronosticos_listos = False
+    except Exception as e:
+        # Manejo de error general
+        st.session_state.pronosticos_generados = None
+        st.session_state.df_banxico = None
+        st.session_state.pronosticos_listos = False
 
 # Sidebar para configuraciones
 with st.sidebar:
@@ -86,11 +98,14 @@ with tab1:
     st.subheader("Gráficas de CETES")
     
     if df_banxico is None or df_banxico.empty:
-        st.error("❌ No se pudieron cargar los datos de Banxico. Verifica que la variable de entorno 'BANXICO_API_KEY' o 'BANXICO_API' esté configurada correctamente.")
-        st.info("💡 **Instrucciones**: \n"
+        st.error("❌ No se pudieron cargar los datos de Banxico. Verifica que la API key esté configurada correctamente.")
+        st.info("💡 **Instrucciones para Streamlit Cloud**: \n"
+                "1. Ve a la configuración de tu app en Streamlit Cloud\n"
+                "2. Agrega un secret: `BANXICO_API_KEY` = `tu_clave_aqui`\n"
+                "3. Obtén tu clave en: https://www.banxico.org.mx/SieAPIRest/service/v1/\n\n"
+                "💡 **Para desarrollo local**: \n"
                 "1. Crea un archivo `.env` en la raíz del proyecto\n"
-                "2. Agrega tu clave de API: `BANXICO_API_KEY=tu_clave_aqui`\n"
-                "3. Obtén tu clave en: https://www.banxico.org.mx/SieAPIRest/service/v1/")
+                "2. Agrega: `BANXICO_API_KEY=tu_clave_aqui`")
         st.stop()
     
     st.success("✅ Datos de Banxico cargados correctamente.")
@@ -135,14 +150,13 @@ with tab1:
             # Preparar datos para SARIMAX
             df_completo = df_banxico.copy()
             
-            # Definir variables exógenas y variables a predecir
+            # Definir variables exógenas
             exog_cols = [c for c in df_completo.columns if 'CETE' not in c]
-            cetes_cols = [c for c in df_completo.columns if 'CETE' in c]
             
             # Variable objetivo según el plazo seleccionado
             variable_objetivo = mapeo_plazos[plazo_cetes]
             
-            if variable_objetivo not in cetes_cols:
+            if variable_objetivo not in df_completo.columns:
                 st.error(f"⚠️ La variable {variable_objetivo} no está disponible en los datos.")
             else:
                 # Usar pronósticos pre-generados desde session_state
@@ -241,7 +255,7 @@ with tab1:
                                 fillcolor='rgba(255,0,0,0.1)',
                                 showlegend=True
                             ))
-                        except Exception as e:
+                        except Exception:
                             # Si no se pueden obtener intervalos, continuar sin ellos
                             pass
                     
@@ -459,7 +473,7 @@ with tab1:
             else:
                 st.warning("⚠️ No hay datos suficientes para mostrar la comparativa de tendencias.")
         else:
-            st.error("❌ No se pudieron cargar los datos de Banxico. Verifica que la variable de entorno 'BANXICO_API_KEY' o 'BANXICO_API' esté configurada correctamente.")
+            st.error("❌ No se pudieron cargar los datos de Banxico. Verifica que la API key esté configurada en Streamlit Cloud secrets o variables de entorno.")
 
 
 with tab2:

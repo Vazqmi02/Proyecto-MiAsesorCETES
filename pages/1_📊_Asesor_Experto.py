@@ -1,18 +1,13 @@
-import os
+import io
 import streamlit as st
-from dotenv import load_dotenv
-from openai import OpenAI
-import tempfile
-import base64
 
-from prompts import cetes_prompt
-from audiorecorder import audiorecorder
 from utils.common import (
-    client_openai, client_deepseek, model_deepseek,
-    audio_player_with_speed, get_image_path,
+    client_openai,
+    audio_player_with_speed,
     obtener_resumen_pronosticos_sarimax,
     obtener_datos_banxico, generar_todos_los_pronosticos
 )
+from prompts import cetes_prompt, generar_seccion_pronosticos
 
 # Configuración de la página
 st.set_page_config(
@@ -28,20 +23,31 @@ st.divider()
 
 # Verificar y generar pronósticos si no existen (por si se accede directamente a esta página)
 if "pronosticos_generados" not in st.session_state:
-    with st.spinner("⏳ Generando pronósticos..."):
-        df_banxico = obtener_datos_banxico()
-        if df_banxico is not None and not df_banxico.empty:
-            pronosticos = generar_todos_los_pronosticos(df_banxico, periodos_pronostico=13)
-            st.session_state.pronosticos_generados = pronosticos
-            st.session_state.df_banxico = df_banxico
-            st.session_state.pronosticos_listos = True
-        else:
-            st.session_state.pronosticos_generados = None
-            st.session_state.df_banxico = None
-            st.session_state.pronosticos_listos = False
-
-# Cargar el prompt base del sistema
-SYSTEM_PROMPT_BASE = cetes_prompt
+    try:
+        with st.spinner("⏳ Generando pronósticos..."):
+            df_banxico = obtener_datos_banxico()
+            if df_banxico is not None and not df_banxico.empty:
+                try:
+                    pronosticos = generar_todos_los_pronosticos(df_banxico, periodos_pronostico=13)
+                    st.session_state.pronosticos_generados = pronosticos
+                    st.session_state.df_banxico = df_banxico
+                    st.session_state.pronosticos_listos = True
+                except Exception as pronostico_error:
+                    # Si falla la generación de pronósticos, continuar sin ellos
+                    st.warning(f"⚠️ No se pudieron generar los pronósticos: {str(pronostico_error)}")
+                    st.session_state.pronosticos_generados = None
+                    st.session_state.df_banxico = df_banxico
+                    st.session_state.pronosticos_listos = False
+            else:
+                st.session_state.pronosticos_generados = None
+                st.session_state.df_banxico = None
+                st.session_state.pronosticos_listos = False
+    except Exception as e:
+        # Manejo de error general
+        st.error(f"❌ Error al cargar datos: {str(e)}")
+        st.session_state.pronosticos_generados = None
+        st.session_state.df_banxico = None
+        st.session_state.pronosticos_listos = False
 
 # Generar prompt del sistema con pronósticos
 def generar_system_prompt_con_pronosticos():
@@ -49,8 +55,11 @@ def generar_system_prompt_con_pronosticos():
     # Usar pronósticos generados al inicio de la aplicación
     pronosticos_dict = st.session_state.get('pronosticos_generados', None)
     
+    max_semanas = 13  # Default
+    resumen_pronosticos = None
+    
     if pronosticos_dict:
-         # Determinar el número máximo de semanas disponibles en los pronósticos
+        # Determinar el número máximo de semanas disponibles en los pronósticos
         max_semanas = 0
         for columna, datos in pronosticos_dict.items():
             if 'pronostico_series' in datos:
@@ -68,38 +77,52 @@ def generar_system_prompt_con_pronosticos():
         # Agregar nota sobre disponibilidad de pronósticos extendidos
         if max_semanas > 4:
             resumen_pronosticos += f"\n\n💡 NOTA: Los pronósticos están disponibles hasta {max_semanas} semanas. Puedes preguntar sobre cualquier semana dentro de este rango."
-    else:
-        resumen_pronosticos = None
     
-    prompt_completo = SYSTEM_PROMPT_BASE
-    
-    if resumen_pronosticos:
-        prompt_completo += "\n\n"
-        prompt_completo += "=" * 60 + "\n"
-        prompt_completo += "📊 DATOS DE PRONÓSTICOS SARIMAX DISPONIBLES\n"
-        prompt_completo += "=" * 60 + "\n"
-        prompt_completo += "\n"
-        prompt_completo += "Tienes acceso a pronósticos generados por el modelo SARIMAX para todos los plazos de CETES.\n"
-        prompt_completo += "Los pronósticos están disponibles hasta 13 semanas en el futuro. Puedes responder preguntas sobre\n"
-        prompt_completo += "cualquier semana dentro de este rango (semana 1, semana 2, hasta semana 13).\n"
-        prompt_completo += "Usa estos datos para responder preguntas sobre tendencias futuras, recomendaciones de inversión\n"
-        prompt_completo += "y análisis de pronósticos. SIEMPRE menciona que estos son pronósticos basados en modelos estadísticos\n"
-        prompt_completo += "y que no garantizan resultados futuros.\n"
-        prompt_completo += "\n"
-        prompt_completo += resumen_pronosticos
-        prompt_completo += "\n"
-        prompt_completo += "=" * 60 + "\n"
-    else:
-        prompt_completo += "\n\n"
-        prompt_completo += "⚠️ NOTA: Los pronósticos SARIMAX no están disponibles en este momento.\n"
-        prompt_completo += "Puedes responder preguntas generales sobre CETES, pero no tienes acceso a pronósticos específicos.\n"
+    # Construir el prompt completo usando la función de prompts.py
+    prompt_completo = cetes_prompt
+    prompt_completo += generar_seccion_pronosticos(resumen_pronosticos, max_semanas)
     
     return prompt_completo
 
 # --- Lógica del Chatbot ---
 
-# Sidebar con botón de limpiar 
+# Sidebar con configuración y entrada de audio
 with st.sidebar:
+    st.subheader("🎤 Entrada de Audio")
+    # Verificar si st.audio_input está disponible (requiere Streamlit >= 1.29.0)
+    # Manejo robusto para Streamlit Cloud y entornos locales
+    audio_value = None
+    send_audio = False
+    
+    # Inicializar en session_state si no existe (para evitar errores)
+    if 'audio_input_available' not in st.session_state:
+        st.session_state.audio_input_available = False
+        try:
+            # Verificar si el método existe
+            if hasattr(st, 'audio_input'):
+                st.session_state.audio_input_available = True
+        except:
+            st.session_state.audio_input_available = False
+    
+    # Intentar usar audio_input solo si está disponible
+    if st.session_state.audio_input_available:
+        try:
+            audio_value = st.audio_input("Graba un mensaje de voz (opcional)")
+            send_audio = st.button("Enviar audio", key="send_audio_button", use_container_width=True)
+        except Exception as e:
+            # Si falla, deshabilitar para evitar errores repetidos
+            st.session_state.audio_input_available = False
+            st.warning("⚠️ La entrada de audio no está disponible en este entorno.")
+            st.caption("💡 Usa la entrada de texto en su lugar.")
+            audio_value = None
+            send_audio = False
+    else:
+        # Mostrar mensaje solo la primera vez, no en cada recarga
+        if 'audio_input_message_shown' not in st.session_state:
+            st.info("💡 La entrada de audio no está disponible. Usa la entrada de texto.")
+            st.session_state.audio_input_message_shown = True
+    
+    st.divider()
     st.subheader("⚙️ Configuración")
     
     if st.button("🗑️ Limpiar Chat"):
@@ -141,59 +164,61 @@ for message in st.session_state.cetes_messages:
         if message["role"] == "assistant" and "audio_bytes" in message:
             st.markdown(audio_player_with_speed(message["audio_bytes"], 1.25), unsafe_allow_html=True)
 
-# Sección de entrada: texto y grabación de voz
-col_input, col_audio = st.columns([4, 1])
+# Sección de entrada de texto
+user_input = st.chat_input("Escribe o graba un mensaje de voz, ¿Qué quieres saber sobre CETES?")
 
-with col_input:
-    user_input = st.chat_input("Escribe o graba un mensaje de voz, ¿Qué quieres saber sobre CETES?")
+# Procesar entrada de texto o audio
+user_prompt = None
+user_display_content = None
 
-with col_audio:
-    st.write("🎤")
-    audio = audiorecorder("Grabar", "Detener")
-
-# Procesar audio grabado (STT) - SOLO si no hay entrada de texto
-if user_input is None and audio is not None and len(audio) > 0:
-    try:
-        # Convertir audio a formato WAV
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-            try:
-                audio.export(tmp_file.name, format="wav")
-            except Exception as export_error:
-                # Si la exportación falla (por ejemplo, sin FFmpeg), intentar obtener los bytes directamente
-                try:
-                    audio_bytes = audio.tobytes() if hasattr(audio, 'tobytes') else bytes(audio)
-                    tmp_file.write(audio_bytes)
-                except:
-                    raise export_error
-            audio_path = tmp_file.name
+# Priorizar entrada de texto
+if user_input:
+    user_prompt = user_input
+    user_display_content = user_input
+elif send_audio:
+    # Procesar audio grabado
+    raw_audio = None
+    filename = None
+    source = None
+    
+    if audio_value is not None:
+        raw_audio = audio_value.getvalue()
+        filename = audio_value.name or "voz_usuario.wav"
+        source = "Audio grabado"
+    
+    if raw_audio:
+        # Crear objeto de archivo para OpenAI
+        audio_file = io.BytesIO(raw_audio)
+        audio_file.name = filename or "voz_usuario.wav"
         
         # Transcribir audio usando OpenAI Whisper
         with st.spinner("🎤 Transcribiendo audio..."):
             if client_openai:
-                with open(audio_path, "rb") as audio_file:
-                    transcript = client_openai.audio.transcriptions.create(
-                        model="gpt-4o-mini-transcribe",
+                try:
+                    transcription = client_openai.audio.transcriptions.create(
+                        model="whisper-1",
                         file=audio_file,
                         language="es"
                     )
-                user_input = transcript.text
+                    user_prompt = transcription.text.strip()
+                    if user_prompt:
+                        user_display_content = f"({source}) {user_prompt}" if source else user_prompt
+                    else:
+                        st.info("La transcripción no contiene texto interpretable. Intenta nuevamente.")
+                except Exception as transcribe_error:
+                    st.error(f"❌ Error al transcribir audio: {transcribe_error}")
+                    st.info("💡 Tip: Si el problema persiste, intenta usar la entrada de texto.")
             else:
                 st.error("❌ API Key de OpenAI no configurada para transcripción")
-        
-        # Limpiar archivo temporal
-        if os.path.exists(audio_path):
-            os.unlink(audio_path)
-        
-    except Exception as e:
-        st.error(f"❌ Error al transcribir audio: {e}")
-        st.info("💡 Tip: Asegúrate de tener permisos de micrófono y que el audio esté en formato compatible.")
+    else:
+        st.warning("Graba un mensaje de voz antes de enviarlo.")
 
 # Obtener nueva entrada del usuario (texto o voz)
-if user_input:
+if user_prompt:
     # Mostrar y guardar el mensaje del usuario
-    st.session_state.cetes_messages.append({"role": "user", "content": user_input})
+    st.session_state.cetes_messages.append({"role": "user", "content": user_prompt})
     with st.chat_message("user"):
-        st.markdown(user_input)
+        st.markdown(user_display_content or user_prompt)
 
     try:
         # 1. Generar prompt del sistema con pronósticos actualizados
@@ -205,46 +230,67 @@ if user_input:
             messages_for_api.append({"role": msg["role"], "content": msg["content"]})
 
         # 2. Llamar a la API de OpenAI
-        if client_openai:
-            with st.spinner("Pensando..."):
-                response = client_openai.chat.completions.create(
-                    model="gpt-5.1",
-                    messages=messages_for_api
-                )
-                assistant_response = response.choices[0].message.content
-        else:
-            st.error("❌ API Key de OpenAI no configurada")
-            assistant_response = "Lo siento, no tengo acceso a la API de OpenAI en este momento."
-        
-        # 3. Mostrar y guardar la respuesta del modelo
-        with st.chat_message("assistant"):
-            st.markdown(assistant_response)
-        
-        # 4. Generar audio TTS siempre activo
-        audio_bytes = None
+        assistant_response = None
         if client_openai:
             try:
-                with st.spinner("🔊 Generando audio..."):
-                    # Generar audio usando OpenAI TTS
-                    tts_response = client_openai.audio.speech.create(
-                        model="gpt-4o-mini-tts",
-                        voice="shimmer",
-                        input=assistant_response,
-                        speed=1.25
+                with st.spinner("Pensando..."):
+                    response = client_openai.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=messages_for_api,
+                        temperature=0.7,
+                        max_tokens=1000
                     )
-                    audio_bytes = tts_response.content
+                    if response and response.choices and len(response.choices) > 0:
+                        assistant_response = response.choices[0].message.content
+                    else:
+                        assistant_response = "Lo siento, no recibí una respuesta válida de la API."
+            except Exception as api_error:
+                st.error(f"❌ Error al conectar con OpenAI: {str(api_error)}")
+                assistant_response = "Lo siento, ocurrió un error al generar la respuesta. Por favor, intenta nuevamente."
+        else:
+            st.error("❌ API Key de OpenAI no configurada")
+            assistant_response = "Lo siento, no tengo acceso a la API de OpenAI en este momento. Por favor, configura tu API key en Streamlit Cloud secrets o en las variables de entorno."
+        
+        if not assistant_response:
+            assistant_response = "Lo siento, no pude generar una respuesta. Por favor, intenta nuevamente."
+        
+        # 3. Mostrar y guardar la respuesta del modelo
+        if assistant_response:
+            with st.chat_message("assistant"):
+                st.markdown(assistant_response)
+            
+            # 4. Generar audio TTS (siempre intentar, pero no bloquear si falla)
+            audio_bytes_response = None
+            if client_openai and assistant_response:
+                try:
+                    with st.spinner("🔊 Generando audio..."):
+                        # Generar audio usando OpenAI TTS (adaptado del código de referencia)
+                        speech = client_openai.audio.speech.create(
+                            model="tts-1",
+                            voice="shimmer",
+                            input=assistant_response,
+                            speed=1.25
+                        )
+                        audio_bytes_response = speech.read()
+                        
+                        if audio_bytes_response:
+                            # Reproducir audio (adaptado del código de referencia)
+                            st.audio(audio_bytes_response, format="audio/mp3", autoplay=True)
+                        else:
+                            st.info("No se pudo obtener audio para esta respuesta.")
                 
-                # Reproducir audio con velocidad 1.25
-                st.markdown(audio_player_with_speed(audio_bytes, 1.25), unsafe_allow_html=True)
-        
-            except Exception as e:
-                st.warning(f"⚠️ No se pudo generar audio: {e}")
-        
-        # Guardar mensaje con audio si existe
-        message_to_save = {"role": "assistant", "content": assistant_response}
-        if audio_bytes:
-            message_to_save["audio_bytes"] = audio_bytes
-        st.session_state.cetes_messages.append(message_to_save)
+                except Exception as tts_error:
+                    st.error(f"No se pudo generar la voz sintética: {tts_error}")
+            
+            # Guardar mensaje con audio si existe
+            message_to_save = {"role": "assistant", "content": assistant_response}
+            if audio_bytes_response:
+                message_to_save["audio_bytes"] = audio_bytes_response
+            st.session_state.cetes_messages.append(message_to_save)
+        else:
+            st.error("❌ No se pudo generar una respuesta. Por favor, intenta nuevamente.")
 
     except Exception as e:
-        st.error(f"Error al generar respuesta: {e}")
+        st.error(f"❌ Error al generar respuesta: {str(e)}")
+        st.info("💡 Si el problema persiste, verifica tu conexión a internet y que las API keys estén configuradas correctamente.")
+        # No agregar mensaje vacío al historial si hay un error
