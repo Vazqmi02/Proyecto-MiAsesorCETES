@@ -10,7 +10,15 @@ def handle_tool_calls(tool_calls):
     results = []
     for tool_call in tool_calls:
         function_name = tool_call.function.name
-        arguments = json.loads(tool_call.function.arguments)
+        try:
+            # Verificar que los argumentos no estén vacíos
+            if not tool_call.function.arguments or tool_call.function.arguments.strip() == '':
+                arguments = {}
+            else:
+                arguments = json.loads(tool_call.function.arguments)
+        except (ValueError, json.JSONDecodeError) as e:
+            print(f"Error al parsear argumentos de tool_call {function_name}: {e}")
+            arguments = {}
         
         # Aquí puedes agregar lógica para diferentes herramientas
         # Por ejemplo: consultar APIs, bases de datos, hacer cálculos, etc.

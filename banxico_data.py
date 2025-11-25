@@ -2,6 +2,7 @@
 Módulo para obtener datos de Banxico y generar pronósticos con SARIMAX
 """
 import os
+import json
 import requests
 import pandas as pd
 import numpy as np
@@ -37,7 +38,18 @@ def descarga_bmx_series(series_dict, fechainicio, fechafin, token):
                 print(f'Error en la consulta para {nombre} ({serie}), código {response.status_code}')
                 continue
             
-            raw_data = response.json()
+            # Verificar que la respuesta tenga contenido antes de parsear JSON
+            if not response.text or response.text.strip() == '':
+                print(f'Respuesta vacía para {nombre} ({serie})')
+                continue
+            
+            try:
+                raw_data = response.json()
+            except (ValueError, json.JSONDecodeError) as e:
+                print(f'Error al parsear JSON para {nombre} ({serie}): {e}')
+                print(f'Respuesta recibida: {response.text[:200]}')
+                continue
+            
             if 'bmx' in raw_data and 'series' in raw_data['bmx'] and len(raw_data['bmx']['series']) > 0:
                 serie_data = raw_data['bmx']['series'][0]
                 if 'datos' in serie_data and len(serie_data['datos']) > 0:
