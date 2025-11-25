@@ -34,8 +34,8 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 Edita el archivo `.env` y agrega:
-- `OPENAI_API_KEY`: Tu API key de OpenAI
-- `BANXICO_API_KEY`: (Opcional) Tu token de API de Banxico para más requests. Si no lo proporcionas, la aplicación funcionará pero con límites de la API pública.
+- `OPENAI_API_KEY`: Tu API key de OpenAI (obligatorio)
+- `BANXICO_API_KEY`: Tu token de API de Banxico (obligatorio). Obtén tu token en: https://www.banxico.org.mx/SieAPIRest/service/v1/token
 
 ## Uso
 

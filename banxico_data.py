@@ -1,6 +1,3 @@
-"""
-Módulo para obtener datos de Banxico y generar pronósticos con SARIMAX
-"""
 import os
 import json
 import requests
@@ -15,18 +12,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 def descarga_bmx_series(series_dict, fechainicio, fechafin, token):
-    """
-    Descarga series de datos económicos del API de Banxico.
-
-    Args:
-        series_dict (dict): Diccionario con ID de serie como clave y nombre como valor
-        fechainicio (str): Fecha de inicio (YYYY-MM-DD)
-        fechafin (str): Fecha de fin (YYYY-MM-DD)
-        token (str): Token de API de Banxico
-
-    Returns:
-        pd.DataFrame: DataFrame con todas las series concatenadas
-    """
     headers = {'Bmx-Token': token} if token else {}
     all_data = []
     
@@ -35,19 +20,14 @@ def descarga_bmx_series(series_dict, fechainicio, fechafin, token):
         try:
             response = requests.get(url, headers=headers, timeout=30)
             if response.status_code != 200:
-                print(f'Error en la consulta para {nombre} ({serie}), código {response.status_code}')
                 continue
             
-            # Verificar que la respuesta tenga contenido antes de parsear JSON
             if not response.text or response.text.strip() == '':
-                print(f'Respuesta vacía para {nombre} ({serie})')
                 continue
             
             try:
                 raw_data = response.json()
-            except (ValueError, json.JSONDecodeError) as e:
-                print(f'Error al parsear JSON para {nombre} ({serie}): {e}')
-                print(f'Respuesta recibida: {response.text[:200]}')
+            except (ValueError, json.JSONDecodeError):
                 continue
             
             if 'bmx' in raw_data and 'series' in raw_data['bmx'] and len(raw_data['bmx']['series']) > 0:
@@ -62,47 +42,26 @@ def descarga_bmx_series(series_dict, fechainicio, fechafin, token):
                     df.dropna(subset=['fecha'], inplace=True)
                     df.set_index('fecha', inplace=True)
                     df.rename(columns={'dato': nombre}, inplace=True)
-                    
                     all_data.append(df[[nombre]])
-                else:
-                    print(f"No se encontraron datos para {nombre} ({serie})")
-            else:
-                print(f"Estructura inesperada para {nombre} ({serie})")
-        except requests.exceptions.RequestException as e:
-            print(f"Error de conexión para {nombre} ({serie}): {e}")
+        except requests.exceptions.RequestException:
             continue
     
     if all_data:
-        df_final = pd.concat(all_data, axis=1, join='outer')
-        return df_final
-    else:
-        print("No se descargaron datos.")
-        return None
+        return pd.concat(all_data, axis=1, join='outer')
+    return None
 
 
 def obtener_datos_banxico(fecha_inicio=None, fecha_fin=None, incluir_exogenas=True):
-    """
-    Obtiene datos de CETES y variables exógenas desde la API de Banxico
+    token_banxico = os.getenv('BANXICO_API_KEY', '')
+    if not token_banxico or token_banxico.strip() == '':
+        raise ValueError("BANXICO_API_KEY no está configurada. Configura tu token en el archivo .env")
     
-    Args:
-        fecha_inicio: Fecha de inicio en formato YYYY-MM-DD (por defecto: 2006-01-01)
-        fecha_fin: Fecha de fin en formato YYYY-MM-DD (por defecto: hoy)
-        incluir_exogenas: Si True, incluye variables exógenas para el modelo
-    
-    Returns:
-        DataFrame con los datos históricos procesados
-    """
     try:
-        # Obtener token de variables de entorno
-        token_banxico = os.getenv('BANXICO_API_KEY', '')
-        
-        # Si no se proporcionan fechas, usar rango amplio
         if fecha_fin is None:
             fecha_fin = datetime.now().strftime('%Y-%m-%d')
         if fecha_inicio is None:
             fecha_inicio = '2006-01-01'
         
-        # Definir series a descargar
         series_banxico_dict = {
             'SF43936': 'CETE_28D',
             'SF43939': 'CETE_91D',
@@ -118,27 +77,20 @@ def obtener_datos_banxico(fecha_inicio=None, fecha_fin=None, incluir_exogenas=Tr
                 'SP1': 'INPC'
             })
         
-        print(f"📥 Descargando datos de Banxico desde {fecha_inicio} hasta {fecha_fin}...")
         df_final_raw = descarga_bmx_series(series_banxico_dict, fecha_inicio, fecha_fin, token_banxico)
         
         if df_final_raw is None or len(df_final_raw) == 0:
-            print("⚠️ No se pudieron descargar datos de Banxico. Generando datos de ejemplo...")
-            return generar_datos_ejemplo()
+            raise ValueError("No se pudieron descargar datos de Banxico. Verifica tu token y conexión")
         
-        # Procesamiento de datos
         columns_to_ffill = list(series_banxico_dict.values())
-        
-        # Ordenar y rellenar valores faltantes
         df_final_raw.sort_index(inplace=True)
         for col in columns_to_ffill:
             if col in df_final_raw.columns:
                 df_final_raw[col] = df_final_raw[col].ffill()
         
-        # Crear DataFrame maestro con frecuencia semanal
         cetes_28d_series = df_final_raw['CETE_28D'].dropna()
         if len(cetes_28d_series) == 0:
-            print("⚠️ No hay datos de CETE_28D. Generando datos de ejemplo...")
-            return generar_datos_ejemplo()
+            raise ValueError("No se encontraron datos de CETE_28D")
         
         idx_weekly = pd.date_range(
             start=cetes_28d_series.index.min(),
@@ -147,8 +99,6 @@ def obtener_datos_banxico(fecha_inicio=None, fecha_fin=None, incluir_exogenas=Tr
         )
         
         df_master_weekly = pd.DataFrame(index=idx_weekly)
-        
-        # Realizar la fusión (merge)
         temp_df_processed = pd.merge(
             df_master_weekly, 
             df_final_raw, 
@@ -157,7 +107,6 @@ def obtener_datos_banxico(fecha_inicio=None, fecha_fin=None, incluir_exogenas=Tr
             how='left'
         )
         
-        # Rellenar datos faltantes en el DataFrame semanalmente procesado
         for col in columns_to_ffill:
             if col in temp_df_processed.columns:
                 temp_df_processed[col] = temp_df_processed[col].ffill()
@@ -165,20 +114,22 @@ def obtener_datos_banxico(fecha_inicio=None, fecha_fin=None, incluir_exogenas=Tr
         df_banxico_processed = temp_df_processed.dropna()
         
         if len(df_banxico_processed) == 0:
-            print("⚠️ No hay datos después del procesamiento. Generando datos de ejemplo...")
-            return generar_datos_ejemplo()
+            raise ValueError("No hay datos válidos después del procesamiento")
         
-        print(f"✅ Datos procesados: {len(df_banxico_processed)} registros desde {df_banxico_processed.index[0].strftime('%Y-%m-%d')} hasta {df_banxico_processed.index[-1].strftime('%Y-%m-%d')}")
         return df_banxico_processed
             
+    except ValueError:
+        raise
     except Exception as e:
-        print(f"Error al obtener datos: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return generar_datos_ejemplo()
+        raise ValueError(f"Error al obtener datos de Banxico: {str(e)}")
 
 def generar_datos_ejemplo():
-    """Genera datos de ejemplo si no se puede acceder a la API de Banxico"""
+    """
+    Genera datos de ejemplo (DEPRECADO - No se usa automáticamente)
+    
+    NOTA: Esta función ya no se llama automáticamente. La API de Banxico es obligatoria.
+    Se mantiene solo para referencia o pruebas manuales.
+    """
     fecha_inicio = datetime.now() - timedelta(days=730)
     fechas = pd.date_range(start=fecha_inicio, end=datetime.now(), freq='W-THU')
     
@@ -223,21 +174,12 @@ def generar_pronostico_sarimax(df, serie_pronosticar='CETE_28D', semanas_pronost
     """
     try:
         if df is None or len(df) == 0:
-            print("Error: DataFrame vacío o None")
             return None, None, None
         
         if serie_pronosticar not in df.columns:
-            print(f"Error: La serie '{serie_pronosticar}' no está en el DataFrame")
-            print(f"Series disponibles: {list(df.columns)}")
             return None, None, None
         
-        # Preparar datos de la serie endógena
         y = df[serie_pronosticar].dropna()
-        
-        if len(y) < 100:
-            print(f"Advertencia: Pocos datos disponibles ({len(y)} registros). Se recomiendan al menos 100.")
-        
-        # Preparar variables exógenas si están disponibles
         exog = None
         exog_future = None
         exog_vars = []
@@ -247,11 +189,7 @@ def generar_pronostico_sarimax(df, serie_pronosticar='CETE_28D', semanas_pronost
             exog_vars = [var for var in variables_exogenas if var in df.columns]
             
             if exog_vars:
-                # Alinear índices de variables exógenas con la serie endógena
                 exog = df[exog_vars].loc[y.index].ffill().bfill()
-                
-                # Para el pronóstico futuro, usar los últimos valores disponibles
-                # En producción, se podrían usar pronósticos de estas variables también
                 ultimos_valores = df[exog_vars].iloc[-1:]
                 exog_future = pd.concat([ultimos_valores] * semanas_pronostico, ignore_index=False)
                 fecha_inicio_pronostico = df.index[-1] + pd.Timedelta(weeks=1)
@@ -261,13 +199,6 @@ def generar_pronostico_sarimax(df, serie_pronosticar='CETE_28D', semanas_pronost
                     freq='W-THU'
                 )
                 exog_future.index = fechas_pronostico
-                
-                print(f"✅ Usando {len(exog_vars)} variables exógenas: {exog_vars}")
-            else:
-                print("⚠️ No se encontraron variables exógenas. Modelo sin variables exógenas.")
-        
-        # Ajustar modelo SARIMAX
-        print(f"🔮 Ajustando modelo SARIMAX para {serie_pronosticar}...")
         modelo = SARIMAX(
             y,
             exog=exog,
@@ -279,27 +210,15 @@ def generar_pronostico_sarimax(df, serie_pronosticar='CETE_28D', semanas_pronost
         
         modelo_ajustado = modelo.fit(disp=False, maxiter=200)
         
-        # Generar pronóstico
         if exog_future is not None:
             pronostico = modelo_ajustado.forecast(steps=semanas_pronostico, exog=exog_future)
-            intervalo_confianza = modelo_ajustado.get_forecast(
-                steps=semanas_pronostico, 
-                exog=exog_future
-            ).conf_int()
+            intervalo_confianza = modelo_ajustado.get_forecast(steps=semanas_pronostico, exog=exog_future).conf_int()
+            fechas_pronostico = exog_future.index
         else:
             pronostico = modelo_ajustado.forecast(steps=semanas_pronostico)
             intervalo_confianza = modelo_ajustado.get_forecast(steps=semanas_pronostico).conf_int()
-        
-        # Crear DataFrame con pronósticos
-        if exog_future is not None:
-            fechas_pronostico = exog_future.index
-        else:
             fecha_inicio_pronostico = df.index[-1] + pd.Timedelta(weeks=1)
-            fechas_pronostico = pd.date_range(
-                start=fecha_inicio_pronostico,
-                periods=semanas_pronostico,
-                freq='W-THU'
-            )
+            fechas_pronostico = pd.date_range(start=fecha_inicio_pronostico, periods=semanas_pronostico, freq='W-THU')
         
         df_pronostico = pd.DataFrame({
             "pronostico": pronostico.values,
@@ -307,7 +226,6 @@ def generar_pronostico_sarimax(df, serie_pronosticar='CETE_28D', semanas_pronost
             "limite_superior": intervalo_confianza.iloc[:, 1].values
         }, index=fechas_pronostico)
         
-        # Estadísticas del modelo
         estadisticas = {
             "aic": modelo_ajustado.aic,
             "bic": modelo_ajustado.bic,
@@ -317,14 +235,8 @@ def generar_pronostico_sarimax(df, serie_pronosticar='CETE_28D', semanas_pronost
             "variables_exogenas_usadas": exog_vars if exog is not None else []
         }
         
-        print(f"✅ Pronóstico generado: {semanas_pronostico} semanas")
-        print(f"   AIC: {estadisticas['aic']:.2f}, BIC: {estadisticas['bic']:.2f}")
-        
         return df_pronostico, estadisticas, modelo_ajustado
         
     except Exception as e:
-        print(f"Error al generar pronóstico: {str(e)}")
-        import traceback
-        traceback.print_exc()
         return None, None, None
 

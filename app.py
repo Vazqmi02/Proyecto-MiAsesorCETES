@@ -18,24 +18,17 @@ model_transcribe = "whisper-1"
 model_tts = "gpt-4o-mini-tts"
 
 def process_message(message, audio_input, chat_history, datos_df=None, pronosticos_df=None):
-    """Procesa el mensaje del usuario (texto o audio) y genera la respuesta"""
-    
-    # Asegurar que chat_history es una lista
     if chat_history is None:
         chat_history = []
     
     user_prompt = None
     user_display_content = None
-    
-    # Procesar entrada de texto
     if message and message.strip():
         user_prompt = message.strip()
         user_display_content = user_prompt
     
-    # Procesar entrada de audio
     elif audio_input is not None:
         try:
-            # audio_input es el path del archivo cuando type="filepath"
             audio_path = audio_input if isinstance(audio_input, str) else None
             
             if audio_path and os.path.exists(audio_path):
@@ -54,14 +47,10 @@ def process_message(message, audio_input, chat_history, datos_df=None, pronostic
     if not user_prompt:
         return chat_history, "", None, None
     
-    # Agregar mensaje del usuario al historial (asegurar que sea string)
     user_msg_str = str(user_display_content or user_prompt)
     chat_history.append((user_msg_str, None))
     
-    # Construir prompt del sistema con información de pronósticos si está disponible
     system_prompt = str(stronger_prompt)
-    
-    # Agregar información de pronósticos al prompt si está disponible
     if pronosticos_df is not None and len(pronosticos_df) > 0:
         pronostico_info = f"""
         
@@ -74,11 +63,8 @@ INFORMACIÓN DE PRONÓSTICOS DISPONIBLE:
 """
         system_prompt += pronostico_info
     
-    # Agregar información de datos históricos si está disponible
     if datos_df is not None and len(datos_df) > 0:
         datos_info_lines = ["\nINFORMACIÓN DE DATOS HISTÓRICOS DISPONIBLE:"]
-        
-        # Información de CETES disponibles
         cetes_series = ['CETE_28D', 'CETE_91D', 'CETE_182D', 'CETE_364D']
         for serie in cetes_series:
             if serie in datos_df.columns:
@@ -87,7 +73,6 @@ INFORMACIÓN DE PRONÓSTICOS DISPONIBLE:
                 promedio = datos_df[serie].mean()
                 datos_info_lines.append(f"- {serie_clean}: Última tasa {ultima_tasa:.2f}%, Promedio {promedio:.2f}%")
         
-        # Información de variables exógenas
         if any(col in datos_df.columns for col in ['Tasa_Objetivo', 'Tasa_FED', 'Tipo_Cambio_Fix', 'INPC']):
             datos_info_lines.append("\nVariables económicas:")
             if 'Tasa_Objetivo' in datos_df.columns:
@@ -99,13 +84,9 @@ INFORMACIÓN DE PRONÓSTICOS DISPONIBLE:
             if 'INPC' in datos_df.columns:
                 datos_info_lines.append(f"- INPC: {datos_df['INPC'].iloc[-1]:.2f}")
         
-        datos_info = "\n".join(datos_info_lines)
-        system_prompt += datos_info
+        system_prompt += "\n".join(datos_info_lines)
     
-    # Construir conversación con el prompt del sistema
     conversation = [{"role": "system", "content": system_prompt}]
-    
-    # Procesar el historial, asegurando que cada entrada sea una tupla válida
     for entry in chat_history:
         if isinstance(entry, tuple) and len(entry) >= 2:
             user_msg, bot_msg = entry[0], entry[1]
@@ -122,14 +103,12 @@ INFORMACIÓN DE PRONÓSTICOS DISPONIBLE:
                 if bot_content:
                     conversation.append({"role": "assistant", "content": bot_content})
     
-    # Procesar respuesta con manejo de tool calls y streaming
     done = False
     response = ""
     audio_bytes = None
     
     while not done:
         try:
-            # Limpiar y validar formato de mensajes antes de enviar
             cleaned_conversation = []
             for msg in conversation:
                 if not isinstance(msg, dict):
@@ -137,27 +116,21 @@ INFORMACIÓN DE PRONÓSTICOS DISPONIBLE:
                 
                 cleaned_msg = {"role": str(msg.get("role", ""))}
                 
-                # Agregar content si existe
                 if "content" in msg and msg["content"] is not None:
                     cleaned_msg["content"] = str(msg["content"])
                 elif "content" in msg and msg["content"] is None:
-                    # Permitir content None solo si hay tool_calls
                     if "tool_calls" in msg:
                         cleaned_msg["content"] = None
                 
-                # Agregar tool_calls si existe
                 if "tool_calls" in msg:
                     cleaned_msg["tool_calls"] = msg["tool_calls"]
                 
-                # Agregar tool_call_id si es un mensaje de tool
                 if "tool_call_id" in msg:
                     cleaned_msg["tool_call_id"] = str(msg["tool_call_id"])
                 
-                # Solo agregar si tiene role válido y al menos content o tool_calls
                 if cleaned_msg["role"] and ("content" in cleaned_msg or "tool_calls" in cleaned_msg):
                     cleaned_conversation.append(cleaned_msg)
             
-            # Usar streaming para mostrar la respuesta mientras se genera
             stream = client_openai.chat.completions.create(
                 model=model_openai,
                 messages=cleaned_conversation,
@@ -165,7 +138,6 @@ INFORMACIÓN DE PRONÓSTICOS DISPONIBLE:
                 stream=True,
             )
             
-            # Acumular la respuesta mientras se recibe
             full_response = ""
             message_role = None
             finish_reason = None
@@ -298,11 +270,20 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
                 try:
                     from banxico_data import obtener_datos_banxico, generar_pronostico_sarimax
                     
-                    # Paso 1: Cargar datos
-                    df = obtener_datos_banxico()
+                    # Paso 1: Cargar datos (obligatorio - lanza excepción si falla)
+                    try:
+                        df = obtener_datos_banxico()
+                    except ValueError as e:
+                        # Error relacionado con la API de Banxico (token faltante, datos no disponibles, etc.)
+                        error_msg = str(e)
+                        return "", f"❌ {error_msg}", None, None, ""
+                    except Exception as e:
+                        # Otros errores inesperados
+                        error_msg = f"Error inesperado al obtener datos de Banxico: {str(e)}"
+                        return "", f"❌ {error_msg}", None, None, ""
                     
                     if df is None or len(df) == 0:
-                        return "", "❌ Error al cargar datos", None, None, ""
+                        return "", "❌ Error: No se obtuvieron datos de Banxico", None, None, ""
                     
                     # Paso 2: Generar pronósticos
                     serie_pronosticar = 'CETE_28D'
