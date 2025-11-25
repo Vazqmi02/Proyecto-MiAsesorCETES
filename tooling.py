@@ -2,26 +2,15 @@ import json
 from openai import OpenAI
 
 def handle_tool_calls(tool_calls):
-    """
-    Maneja las llamadas a herramientas (tools) del modelo.
-    Por ahora retorna respuestas vacías, pero puedes expandir esta función
-    para integrar APIs externas, bases de datos, etc.
-    """
     results = []
     for tool_call in tool_calls:
-        function_name = tool_call.function.name
         try:
-            # Verificar que los argumentos no estén vacíos
             if not tool_call.function.arguments or tool_call.function.arguments.strip() == '':
                 arguments = {}
             else:
                 arguments = json.loads(tool_call.function.arguments)
-        except (ValueError, json.JSONDecodeError) as e:
-            print(f"Error al parsear argumentos de tool_call {function_name}: {e}")
+        except (ValueError, json.JSONDecodeError):
             arguments = {}
-        
-        # Aquí puedes agregar lógica para diferentes herramientas
-        # Por ejemplo: consultar APIs, bases de datos, hacer cálculos, etc.
         
         result = {
             "role": "tool",
@@ -32,7 +21,6 @@ def handle_tool_calls(tool_calls):
     
     return results
 
-# Definición de herramientas disponibles para el modelo
 tools = [
     {
         "type": "function",
@@ -60,4 +48,3 @@ tools = [
         }
     }
 ]
-

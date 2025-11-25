@@ -1,7 +1,6 @@
 import os
 import json
 import gradio as gr
-from io import BytesIO
 from openai import OpenAI
 from dotenv import load_dotenv
 from prompts import stronger_prompt
@@ -105,7 +104,6 @@ INFORMACIÓN DE PRONÓSTICOS DISPONIBLE:
     
     done = False
     response = ""
-    audio_bytes = None
     
     while not done:
         try:
@@ -155,7 +153,6 @@ INFORMACIÓN DE PRONÓSTICOS DISPONIBLE:
                         tool_calls = []
                     tool_calls.extend(chunk.choices[0].delta.tool_calls)
             
-            # Crear el objeto message simulado para compatibilidad
             class SimulatedMessage:
                 def __init__(self, role, content, tool_calls=None):
                     self.role = role
@@ -164,9 +161,7 @@ INFORMACIÓN DE PRONÓSTICOS DISPONIBLE:
             
             message = SimulatedMessage(message_role or "assistant", full_response, tool_calls)
             
-            # Si hay tool calls, procesarlos
             if finish_reason == "tool_calls" and tool_calls:
-                # Procesar tool calls (código existente)
                 tool_calls_serialized = [
                     {
                         "id": tc.id,
@@ -202,16 +197,12 @@ INFORMACIÓN DE PRONÓSTICOS DISPONIBLE:
             response = f"Error: {str(e)}"
             done = True
     
-    # Actualizar historial con la respuesta
-    # Asegurar que response sea un string
     response_str = str(response) if response else ""
     
     if chat_history and len(chat_history) > 0:
-        # Asegurar que ambos elementos de la tupla sean strings
         user_msg = str(chat_history[-1][0]) if chat_history[-1][0] else ""
         chat_history[-1] = (user_msg, response_str)
     
-    # Generar audio de la respuesta automáticamente
     audio_output = None
     if response_str and response_str.strip():
         try:
@@ -221,7 +212,6 @@ INFORMACIÓN DE PRONÓSTICOS DISPONIBLE:
                 input=response_str
             )
             audio_bytes = speech.read()
-            # Guardar en archivo temporal para Gradio
             with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
                 tmp_file.write(audio_bytes)
                 audio_output = tmp_file.name
@@ -231,18 +221,15 @@ INFORMACIÓN DE PRONÓSTICOS DISPONIBLE:
     return chat_history, "", audio_output, None
 
 def clear_chat():
-    """Limpia el historial del chat"""
     return [], None
 
 with gr.Blocks(title="Mi Asesor CETES") as demo:
     gr.Markdown("# Mi Asesor CETES")
     
-    # Variable global para almacenar pronósticos
     pronosticos_globales = gr.State(value=None)
     datos_historicos = gr.State(value=None)
     
-    with gr.Tabs() as tabs:
-        # SEGMENTO 1: INICIO
+    with gr.Tabs():
         with gr.Tab("🏠 Inicio"):
             gr.Markdown("## Bienvenido a Mi Asesor CETES")
             gr.Markdown("""
@@ -270,26 +257,21 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
                 try:
                     from banxico_data import obtener_datos_banxico, generar_pronostico_sarimax
                     
-                    # Paso 1: Cargar datos (obligatorio - lanza excepción si falla)
                     try:
                         df = obtener_datos_banxico()
                     except ValueError as e:
-                        # Error relacionado con la API de Banxico (token faltante, datos no disponibles, etc.)
                         error_msg = str(e)
                         return "", f"❌ {error_msg}", None, None, ""
                     except Exception as e:
-                        # Otros errores inesperados
                         error_msg = f"Error inesperado al obtener datos de Banxico: {str(e)}"
                         return "", f"❌ {error_msg}", None, None, ""
                     
                     if df is None or len(df) == 0:
                         return "", "❌ Error: No se obtuvieron datos de Banxico", None, None, ""
                     
-                    # Paso 2: Generar pronósticos
                     serie_pronosticar = 'CETE_28D'
                     cetes_series = ['CETE_28D', 'CETE_91D', 'CETE_182D', 'CETE_364D']
                     if serie_pronosticar not in df.columns:
-                        # Si no está disponible, usar la primera serie de CETES disponible
                         for serie in cetes_series:
                             if serie in df.columns:
                                 serie_pronosticar = serie
@@ -308,8 +290,6 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
                         return "", "⚠️ Datos cargados pero error al generar pronósticos", df, None, ""
                         
                 except Exception as e:
-                    import traceback
-                    traceback.print_exc()
                     error_msg = f"Error: {str(e)}"
                     return "", f"❌ {error_msg}", None, None, ""
             
@@ -318,7 +298,6 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
                 outputs=[datos_info, status_text, datos_historicos, pronosticos_globales, pronostico_info]
             )
         
-        # SEGMENTO 2: ASESOR EXPERTO
         with gr.Tab("💬 Asesor Experto"):
             chatbot = gr.Chatbot(label="Chat", height=500)
             
@@ -348,19 +327,15 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
             error_msg = gr.Textbox(label="Mensajes", visible=False)
             
             def respond(message, audio, history, datos_df, pronosticos_df):
-                # Asegurar que history sea una lista válida
                 if history is None:
                     history = []
                 
-                # Limpiar el historial de entrada para asegurar formato correcto (tuplas)
                 clean_input_history = []
                 if history:
                     for entry in history:
                         if isinstance(entry, dict):
-                            # Si viene en formato dict, extraer el contenido correctamente
                             role = entry.get("role", "")
                             content = entry.get("content", "")
-                            # Si content es una lista o dict, extraer el texto
                             if isinstance(content, list) and len(content) > 0:
                                 if isinstance(content[0], dict):
                                     content = content[0].get("text", str(content[0]))
@@ -389,18 +364,14 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
                 
                 new_history, empty_msg, audio_data, error = process_message(message, audio, clean_input_history, datos_df, pronosticos_df)
                 
-                # Convertir de tuplas a formato de diccionarios que espera Gradio 6.0
-                # El contenido debe ser texto plano, no estructuras anidadas
                 cleaned_history = []
                 if new_history and isinstance(new_history, list):
                     for entry in new_history:
                         if isinstance(entry, tuple) and len(entry) >= 2:
                             user_msg = entry[0]
                             bot_msg = entry[1]
-                            # Asegurar que el contenido sea texto plano
                             if user_msg is not None:
                                 user_text = str(user_msg).strip()
-                                # Si es una estructura, extraer el texto
                                 if user_text.startswith("[{") or user_text.startswith("{'text'"):
                                     try:
                                         import json
@@ -416,7 +387,6 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
                             
                             if bot_msg is not None:
                                 bot_text = str(bot_msg).strip()
-                                # Si es una estructura, extraer el texto
                                 if bot_text.startswith("[{") or bot_text.startswith("{'text'"):
                                     try:
                                         import json
@@ -437,26 +407,21 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
                             if bot_msg.strip():
                                 cleaned_history.append({"role": "assistant", "content": bot_msg.strip()})
                 
-                # Asegurar que siempre devolvamos una lista válida
                 if not isinstance(cleaned_history, list):
                     cleaned_history = []
                 
                 return cleaned_history, empty_msg or "", audio_data, error or ""
             
             def safe_respond(message, audio, history, datos_df, pronosticos_df):
-                """Wrapper para asegurar formato correcto"""
                 try:
                     result = respond(message, audio, history, datos_df, pronosticos_df)
-                    # Validar que el historial sea una lista de diccionarios
                     hist, msg, aud, err = result
                     if hist and isinstance(hist, list):
-                        # Validar cada entrada sea un diccionario con role y content
                         valid_hist = []
                         for item in hist:
                             if isinstance(item, dict) and "role" in item and "content" in item:
                                 valid_hist.append({"role": str(item["role"]), "content": str(item["content"])})
                             elif isinstance(item, tuple) and len(item) == 2:
-                                # Convertir tuplas a diccionarios
                                 if item[0]:
                                     valid_hist.append({"role": "user", "content": str(item[0])})
                                 if item[1]:
@@ -470,7 +435,6 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
             send_btn.click(safe_respond, [msg, audio_input, chatbot, datos_historicos, pronosticos_globales], [chatbot, msg, audio_output, error_msg])
             clear_btn.click(clear_chat, None, [chatbot, audio_output])
         
-        # SEGMENTO 3: GRÁFICAS Y PRONÓSTICOS
         with gr.Tab("📈 Gráficas y Pronósticos"):
             gr.Markdown("## Visualización de Datos Históricos y Pronósticos")
             gr.Markdown("Aquí podrás visualizar gráficas históricas y comparativas de diferentes plazos de CETES.")
@@ -501,9 +465,7 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
                     # Mostrar todos los datos disponibles (ya no hay filtro por período)
                     datos_filtrados = datos_df.copy()
                     
-                    # Verificar que el tipo de CETES seleccionado esté disponible
                     if tipo_cetes not in datos_filtrados.columns:
-                        # Si no está disponible, usar el primero disponible
                         cetes_series = ['CETE_28D', 'CETE_91D', 'CETE_182D', 'CETE_364D']
                         for serie in cetes_series:
                             if serie in datos_filtrados.columns:
@@ -512,7 +474,6 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
                         else:
                             return None
                     
-                    # Etiquetas y colores para los diferentes tipos de CETES
                     etiquetas = {
                         'CETE_28D': 'CETES a 28 Días',
                         'CETE_91D': 'CETES a 91 Días',
@@ -529,7 +490,6 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
                     if tipo == "Histórica y Pronósticos":
                         fig = go.Figure()
                         
-                        # Graficar datos históricos
                         fig.add_trace(go.Scatter(
                             x=datos_filtrados.index,
                             y=datos_filtrados[tipo_cetes],
@@ -539,7 +499,6 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
                             marker=dict(size=4)
                         ))
                         
-                        # Graficar pronósticos si existen
                         if (pronosticos_df is not None and len(pronosticos_df) > 0 and 
                             'pronostico' in pronosticos_df.columns):
                             fig.add_trace(go.Scatter(
@@ -551,7 +510,6 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
                                 marker=dict(size=5, symbol='square')
                             ))
                             
-                            # Intervalo de confianza
                             if 'limite_inferior' in pronosticos_df.columns and 'limite_superior' in pronosticos_df.columns:
                                 fig.add_trace(go.Scatter(
                                     x=pronosticos_df.index.tolist() + pronosticos_df.index.tolist()[::-1],
@@ -576,7 +534,6 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
                     elif tipo == "Comparativa de Plazos":
                         fig = go.Figure()
                         
-                        # Graficar todos los plazos de CETES disponibles
                         cetes_series = ['CETE_28D', 'CETE_91D', 'CETE_182D', 'CETE_364D']
                         for serie in cetes_series:
                             if serie in datos_filtrados.columns:
@@ -606,7 +563,6 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
                             row_heights=[0.6, 0.4]
                         )
                         
-                        # Gráfica 1: Datos con media móvil
                         fig.add_trace(go.Scatter(
                             x=datos_filtrados.index,
                             y=datos_filtrados[tipo_cetes],
@@ -616,7 +572,6 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
                             opacity=0.6
                         ), row=1, col=1)
                         
-                        # Media móvil de 12 semanas (~3 meses)
                         if len(datos_filtrados) >= 12:
                             media_movil = datos_filtrados[tipo_cetes].rolling(window=12).mean()
                             fig.add_trace(go.Scatter(
@@ -627,7 +582,6 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
                                 line=dict(color='#A23B72', width=2.5)
                             ), row=1, col=1)
                         
-                        # Gráfica 2: Volatilidad (desviación estándar móvil)
                         if len(datos_filtrados) >= 12:
                             volatilidad = datos_filtrados[tipo_cetes].rolling(window=12).std()
                             fig.add_trace(go.Scatter(
@@ -683,17 +637,6 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
             
             pronosticos_globales.change(
                 generar_grafica,
-                inputs=[datos_historicos, pronosticos_globales, tipo_grafica, tipo_cetes],
-                outputs=[grafica_output]
-            )
-            
-            def cargar_grafica_inicial(datos_df, pronosticos_df, tipo, tipo_cetes_val):
-                if datos_df is not None:
-                    return generar_grafica(datos_df, pronosticos_df, tipo, tipo_cetes_val)
-                return None
-            
-            grafica_output.load(
-                cargar_grafica_inicial,
                 inputs=[datos_historicos, pronosticos_globales, tipo_grafica, tipo_cetes],
                 outputs=[grafica_output]
             )

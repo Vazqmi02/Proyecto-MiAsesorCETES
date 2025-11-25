@@ -3,7 +3,7 @@ import json
 import requests
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 import warnings
 warnings.filterwarnings('ignore')
@@ -36,7 +36,6 @@ def descarga_bmx_series(series_dict, fechainicio, fechafin, token):
                     data = serie_data['datos']
                     df = pd.DataFrame(data)
                     
-                    # Procesa y limpia los datos
                     df['dato'] = df['dato'].replace('N/E', np.nan).astype(float)
                     df['fecha'] = pd.to_datetime(df['fecha'], dayfirst=True, errors='coerce')
                     df.dropna(subset=['fecha'], inplace=True)
@@ -123,55 +122,9 @@ def obtener_datos_banxico(fecha_inicio=None, fecha_fin=None, incluir_exogenas=Tr
     except Exception as e:
         raise ValueError(f"Error al obtener datos de Banxico: {str(e)}")
 
-def generar_datos_ejemplo():
-    """
-    Genera datos de ejemplo (DEPRECADO - No se usa automáticamente)
-    
-    NOTA: Esta función ya no se llama automáticamente. La API de Banxico es obligatoria.
-    Se mantiene solo para referencia o pruebas manuales.
-    """
-    fecha_inicio = datetime.now() - timedelta(days=730)
-    fechas = pd.date_range(start=fecha_inicio, end=datetime.now(), freq='W-THU')
-    
-    # Simular datos de CETES con tendencia y estacionalidad
-    np.random.seed(42)
-    base_tasa = 11.0
-    tendencia = np.linspace(0, 0.5, len(fechas))
-    estacionalidad = 0.3 * np.sin(2 * np.pi * np.arange(len(fechas)) / 52)
-    ruido = np.random.normal(0, 0.1, len(fechas))
-    
-    valores = base_tasa + tendencia + estacionalidad + ruido
-    
-    df = pd.DataFrame({
-        "CETE_28D": valores,
-        "CETE_91D": valores * 1.15,
-        "CETE_182D": valores * 1.25,
-        "CETE_364D": valores * 1.35,
-        "Tasa_Objetivo": valores * 0.95,
-        "Tasa_FED": valores * 0.8,
-        "Tipo_Cambio_Fix": 17.0 + np.random.normal(0, 0.5, len(fechas)),
-        "INPC": 100 + np.cumsum(np.random.normal(0.1, 0.05, len(fechas)))
-    }, index=fechas)
-    
-    return df
-
 def generar_pronostico_sarimax(df, serie_pronosticar='CETE_28D', semanas_pronostico=4, 
                                 orden=(1, 1, 1), orden_estacional=(1, 1, 1, 52),
                                 usar_exogenas=True):
-    """
-    Genera pronóstico usando modelo SARIMAX con variables exógenas
-    
-    Args:
-        df: DataFrame con datos históricos (debe incluir CETES y variables exógenas)
-        serie_pronosticar: Nombre de la serie a pronosticar ('CETE_28D', 'CETE_91D', etc.)
-        semanas_pronostico: Número de semanas a pronosticar
-        orden: Orden del modelo ARIMA (p, d, q)
-        orden_estacional: Orden estacional (P, D, Q, s) - s=52 para datos semanales
-        usar_exogenas: Si True, usa variables exógenas en el modelo
-    
-    Returns:
-        DataFrame con pronósticos, diccionario con estadísticas del modelo, modelo ajustado
-    """
     try:
         if df is None or len(df) == 0:
             return None, None, None
