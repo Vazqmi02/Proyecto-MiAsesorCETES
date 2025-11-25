@@ -653,10 +653,7 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
                         )
                     
                     return fig
-                except Exception as e:
-                    print(f"Error al generar gráfica: {str(e)}")
-                    import traceback
-                    traceback.print_exc()
+                except Exception:
                     return None
             
             actualizar_grafica_btn = gr.Button("🔄 Actualizar Gráfica", variant="primary", size="lg")
@@ -666,7 +663,6 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
                 outputs=[grafica_output]
             )
             
-            # Auto-actualizar cuando cambian los datos o el tipo de gráfica
             tipo_grafica.change(
                 generar_grafica,
                 inputs=[datos_historicos, pronosticos_globales, tipo_grafica, tipo_cetes],
@@ -675,6 +671,29 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
             
             tipo_cetes.change(
                 generar_grafica,
+                inputs=[datos_historicos, pronosticos_globales, tipo_grafica, tipo_cetes],
+                outputs=[grafica_output]
+            )
+            
+            datos_historicos.change(
+                generar_grafica,
+                inputs=[datos_historicos, pronosticos_globales, tipo_grafica, tipo_cetes],
+                outputs=[grafica_output]
+            )
+            
+            pronosticos_globales.change(
+                generar_grafica,
+                inputs=[datos_historicos, pronosticos_globales, tipo_grafica, tipo_cetes],
+                outputs=[grafica_output]
+            )
+            
+            def cargar_grafica_inicial(datos_df, pronosticos_df, tipo, tipo_cetes_val):
+                if datos_df is not None:
+                    return generar_grafica(datos_df, pronosticos_df, tipo, tipo_cetes_val)
+                return None
+            
+            grafica_output.load(
+                cargar_grafica_inicial,
                 inputs=[datos_historicos, pronosticos_globales, tipo_grafica, tipo_cetes],
                 outputs=[grafica_output]
             )
