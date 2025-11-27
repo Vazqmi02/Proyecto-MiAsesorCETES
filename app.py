@@ -462,7 +462,6 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
                     from plotly.subplots import make_subplots
                     import pandas as pd
                     
-                    # Mostrar todos los datos disponibles (ya no hay filtro por período)
                     datos_filtrados = datos_df.copy()
                     
                     if tipo_cetes not in datos_filtrados.columns:
