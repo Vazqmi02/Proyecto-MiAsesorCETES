@@ -50,16 +50,29 @@ def process_message(message, audio_input, chat_history, datos_df=None, pronostic
     chat_history.append((user_msg_str, None))
     
     system_prompt = str(stronger_prompt)
-    if pronosticos_df is not None and len(pronosticos_df) > 0:
-        pronostico_info = f"""
+    if pronosticos_df is not None:
+        pronostico_info = "\n\nINFORMACIÓN DE PRONÓSTICOS DISPONIBLE:"
         
-INFORMACIÓN DE PRONÓSTICOS DISPONIBLE:
-- Pronóstico para la próxima semana: {pronosticos_df['pronostico'].iloc[0]:.2f}%
-- Pronóstico promedio ({len(pronosticos_df)} semanas): {pronosticos_df['pronostico'].mean():.2f}%
-- Pronóstico máximo: {pronosticos_df['pronostico'].max():.2f}%
-- Pronóstico mínimo: {pronosticos_df['pronostico'].min():.2f}%
-- Intervalo de confianza (próxima semana): {pronosticos_df['limite_inferior'].iloc[0]:.2f}% - {pronosticos_df['limite_superior'].iloc[0]:.2f}%
-"""
+        if isinstance(pronosticos_df, dict):
+            for serie, df_pronostico in pronosticos_df.items():
+                if df_pronostico is not None and len(df_pronostico) > 0 and 'pronostico' in df_pronostico.columns:
+                    serie_nombre = serie.replace('CETE_', 'CETES a ').replace('D', ' días')
+                    pronostico_info += f"\n\n{serie_nombre}:"
+                    pronostico_info += f"\n- Pronóstico para la próxima semana: {df_pronostico['pronostico'].iloc[0]:.2f}%"
+                    pronostico_info += f"\n- Pronóstico promedio ({len(df_pronostico)} semanas): {df_pronostico['pronostico'].mean():.2f}%"
+                    pronostico_info += f"\n- Pronóstico máximo: {df_pronostico['pronostico'].max():.2f}%"
+                    pronostico_info += f"\n- Pronóstico mínimo: {df_pronostico['pronostico'].min():.2f}%"
+                    if 'limite_inferior' in df_pronostico.columns and 'limite_superior' in df_pronostico.columns:
+                        pronostico_info += f"\n- Intervalo de confianza (próxima semana): {df_pronostico['limite_inferior'].iloc[0]:.2f}% - {df_pronostico['limite_superior'].iloc[0]:.2f}%"
+        elif hasattr(pronosticos_df, 'columns') and len(pronosticos_df) > 0:
+            if 'pronostico' in pronosticos_df.columns:
+                pronostico_info += f"\n- Pronóstico para la próxima semana: {pronosticos_df['pronostico'].iloc[0]:.2f}%"
+                pronostico_info += f"\n- Pronóstico promedio ({len(pronosticos_df)} semanas): {pronosticos_df['pronostico'].mean():.2f}%"
+                pronostico_info += f"\n- Pronóstico máximo: {pronosticos_df['pronostico'].max():.2f}%"
+                pronostico_info += f"\n- Pronóstico mínimo: {pronosticos_df['pronostico'].min():.2f}%"
+                if 'limite_inferior' in pronosticos_df.columns and 'limite_superior' in pronosticos_df.columns:
+                    pronostico_info += f"\n- Intervalo de confianza (próxima semana): {pronosticos_df['limite_inferior'].iloc[0]:.2f}% - {pronosticos_df['limite_superior'].iloc[0]:.2f}%"
+        
         system_prompt += pronostico_info
     
     if datos_df is not None and len(datos_df) > 0:
@@ -90,13 +103,11 @@ INFORMACIÓN DE PRONÓSTICOS DISPONIBLE:
         if isinstance(entry, tuple) and len(entry) >= 2:
             user_msg, bot_msg = entry[0], entry[1]
             
-            # Agregar mensaje del usuario si existe y es válido
             if user_msg is not None:
                 user_content = str(user_msg).strip()
                 if user_content:
                     conversation.append({"role": "user", "content": user_content})
             
-            # Agregar mensaje del asistente si existe y es válido
             if bot_msg is not None:
                 bot_content = str(bot_msg).strip()
                 if bot_content:
@@ -269,23 +280,36 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
                     if df is None or len(df) == 0:
                         return "", "❌ Error: No se obtuvieron datos de Banxico", None, None, ""
                     
-                    serie_pronosticar = 'CETE_28D'
                     cetes_series = ['CETE_28D', 'CETE_91D', 'CETE_182D', 'CETE_364D']
-                    if serie_pronosticar not in df.columns:
-                        for serie in cetes_series:
-                            if serie in df.columns:
-                                serie_pronosticar = serie
-                                break
+                    pronosticos_dict = {}
+                    series_exitosas = []
+                    series_fallidas = []
                     
-                    df_pronostico, estadisticas, modelo = generar_pronostico_sarimax(
-                        df, 
-                        serie_pronosticar=serie_pronosticar,
-                        semanas_pronostico=13,
-                        usar_exogenas=True
-                    )
+                    for serie in cetes_series:
+                        if serie in df.columns:
+                            try:
+                                df_pronostico, estadisticas, modelo = generar_pronostico_sarimax(
+                                    df, 
+                                    serie_pronosticar=serie,
+                                    semanas_pronostico=13,
+                                    usar_exogenas=True
+                                )
+                                
+                                if df_pronostico is not None:
+                                    pronosticos_dict[serie] = df_pronostico
+                                    series_exitosas.append(serie)
+                                else:
+                                    series_fallidas.append(serie)
+                            except Exception as e:
+                                series_fallidas.append(serie)
                     
-                    if df_pronostico is not None:
-                        return "", "✅ Datos y pronósticos actualizados correctamente", df, df_pronostico, ""
+                    pronosticos_final = pronosticos_dict if len(pronosticos_dict) > 0 else None
+                    
+                    if pronosticos_final is not None:
+                        mensaje = f"✅ Datos y pronósticos actualizados correctamente"
+                        if series_fallidas:
+                            mensaje += f"\n⚠️ No se pudieron generar pronósticos para: {', '.join(series_fallidas)}"
+                        return "", mensaje, df, pronosticos_final, ""
                     else:
                         return "", "⚠️ Datos cargados pero error al generar pronósticos", df, None, ""
                         
@@ -453,6 +477,66 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
                 )
             
             grafica_output = gr.Plot(label="Gráfica Interactiva")
+            recomendacion_output = gr.Markdown(label="Recomendación de Inversión", visible=True)
+            
+            def generar_recomendacion(datos_df, pronosticos_df, tipo_cetes):
+                CAUTIOUS_THRESHOLD = 0.5
+                
+                if datos_df is None or len(datos_df) == 0:
+                    return "⚠️ No hay datos históricos disponibles para generar una recomendación."
+                
+                if pronosticos_df is None:
+                    return "⚠️ No hay pronósticos disponibles. Actualiza los datos para obtener recomendaciones."
+                
+                if tipo_cetes not in datos_df.columns:
+                    cetes_series = ['CETE_28D', 'CETE_91D', 'CETE_182D', 'CETE_364D']
+                    for serie in cetes_series:
+                        if serie in datos_df.columns:
+                            tipo_cetes = serie
+                            break
+                    else:
+                        return "⚠️ No se encontró la serie de CETES especificada."
+                
+                pronostico_actual = None
+                if isinstance(pronosticos_df, dict):
+                    pronostico_actual = pronosticos_df.get(tipo_cetes)
+                    if pronostico_actual is None:
+                        return f"⚠️ No hay pronóstico disponible para {tipo_cetes}. Actualiza los datos."
+                elif hasattr(pronosticos_df, 'columns') and 'pronostico' in pronosticos_df.columns:
+                    pronostico_actual = pronosticos_df
+                else:
+                    return "⚠️ Los pronósticos no tienen el formato esperado."
+                
+                if pronostico_actual is None or len(pronostico_actual) == 0:
+                    return f"⚠️ No hay pronóstico disponible para {tipo_cetes}."
+                
+                if 'pronostico' not in pronostico_actual.columns:
+                    return "⚠️ Los pronósticos no tienen el formato esperado."
+                
+                tasa_actual = datos_df[tipo_cetes].iloc[-1]
+                pronostico_proxima = pronostico_actual['pronostico'].iloc[0]
+                change = pronostico_proxima - tasa_actual
+                
+                etiquetas = {
+                    'CETE_28D': 'CETES a 28 Días',
+                    'CETE_91D': 'CETES a 91 Días',
+                    'CETE_182D': 'CETES a 182 Días',
+                    'CETE_364D': 'CETES a 364 Días'
+                }
+                nombre_cetes = etiquetas.get(tipo_cetes, tipo_cetes)
+                
+                if change > CAUTIOUS_THRESHOLD:
+                    recommendation = "🤔 ESPERAR"
+                    explanation = f"Se predice un alza significativa en la próxima subasta (> {CAUTIOUS_THRESHOLD:.2f}pp). Esperar podría darte un mayor rendimiento."
+                    return f"### {recommendation}\n\n{explanation}\n\n**Tasa actual:** {tasa_actual:.2f}%\n**Pronóstico próxima subasta:** {pronostico_proxima:.2f}%\n**Cambio previsto:** +{change:.2f} puntos porcentuales"
+                elif change < -CAUTIOUS_THRESHOLD:
+                    recommendation = "✅ ¡INVERTIR AHORA!"
+                    explanation = f"La tasa actual es atractiva. Nuestro modelo predice que podría bajar pronto (< -{CAUTIOUS_THRESHOLD:.2f}pp), ¡asegura este rendimiento!"
+                    return f"### {recommendation}\n\n{explanation}\n\n**Tasa actual:** {tasa_actual:.2f}%\n**Pronóstico próxima subasta:** {pronostico_proxima:.2f}%\n**Cambio previsto:** {change:.2f} puntos porcentuales"
+                else:
+                    recommendation = "⚖️ INVERTIR (ESTABLE)"
+                    explanation = "El cambio previsto es mínimo. Invierte ahora para evitar que tu capital pierda tiempo en efectivo."
+                    return f"### {recommendation}\n\n{explanation}\n\n**Tasa actual:** {tasa_actual:.2f}%\n**Pronóstico próxima subasta:** {pronostico_proxima:.2f}%\n**Cambio previsto:** {change:+.2f} puntos porcentuales"
             
             def generar_grafica(datos_df, pronosticos_df, tipo, tipo_cetes):
                 if datos_df is None:
@@ -498,21 +582,28 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
                             marker=dict(size=4)
                         ))
                         
-                        if (pronosticos_df is not None and len(pronosticos_df) > 0 and 
-                            'pronostico' in pronosticos_df.columns):
+                        pronostico_actual = None
+                        if pronosticos_df is not None:
+                            if isinstance(pronosticos_df, dict):
+                                pronostico_actual = pronosticos_df.get(tipo_cetes)
+                            elif hasattr(pronosticos_df, 'columns') and 'pronostico' in pronosticos_df.columns:
+                                pronostico_actual = pronosticos_df
+                        
+                        if (pronostico_actual is not None and len(pronostico_actual) > 0 and 
+                            'pronostico' in pronostico_actual.columns):
                             fig.add_trace(go.Scatter(
-                                x=pronosticos_df.index,
-                                y=pronosticos_df['pronostico'],
+                                x=pronostico_actual.index,
+                                y=pronostico_actual['pronostico'],
                                 mode='lines+markers',
                                 name='Pronóstico',
                                 line=dict(color='#A23B72', width=2.5, dash='dash'),
                                 marker=dict(size=5, symbol='square')
                             ))
                             
-                            if 'limite_inferior' in pronosticos_df.columns and 'limite_superior' in pronosticos_df.columns:
+                            if 'limite_inferior' in pronostico_actual.columns and 'limite_superior' in pronostico_actual.columns:
                                 fig.add_trace(go.Scatter(
-                                    x=pronosticos_df.index.tolist() + pronosticos_df.index.tolist()[::-1],
-                                    y=pronosticos_df['limite_superior'].tolist() + pronosticos_df['limite_inferior'].tolist()[::-1],
+                                    x=pronostico_actual.index.tolist() + pronostico_actual.index.tolist()[::-1],
+                                    y=pronostico_actual['limite_superior'].tolist() + pronostico_actual['limite_inferior'].tolist()[::-1],
                                     fill='toself',
                                     fillcolor='rgba(162, 59, 114, 0.2)',
                                     line=dict(color='rgba(255,255,255,0)'),
@@ -609,35 +700,43 @@ with gr.Blocks(title="Mi Asesor CETES") as demo:
                 except Exception:
                     return None
             
+            def actualizar_grafica_y_recomendacion(datos_df, pronosticos_df, tipo, tipo_cetes):
+                grafica = generar_grafica(datos_df, pronosticos_df, tipo, tipo_cetes)
+                if tipo == "Histórica y Pronósticos":
+                    recomendacion = generar_recomendacion(datos_df, pronosticos_df, tipo_cetes)
+                else:
+                    recomendacion = ""
+                return grafica, recomendacion
+            
             actualizar_grafica_btn = gr.Button("🔄 Actualizar Gráfica", variant="primary", size="lg")
             actualizar_grafica_btn.click(
-                generar_grafica,
+                actualizar_grafica_y_recomendacion,
                 inputs=[datos_historicos, pronosticos_globales, tipo_grafica, tipo_cetes],
-                outputs=[grafica_output]
+                outputs=[grafica_output, recomendacion_output]
             )
             
             tipo_grafica.change(
-                generar_grafica,
+                actualizar_grafica_y_recomendacion,
                 inputs=[datos_historicos, pronosticos_globales, tipo_grafica, tipo_cetes],
-                outputs=[grafica_output]
+                outputs=[grafica_output, recomendacion_output]
             )
             
             tipo_cetes.change(
-                generar_grafica,
+                actualizar_grafica_y_recomendacion,
                 inputs=[datos_historicos, pronosticos_globales, tipo_grafica, tipo_cetes],
-                outputs=[grafica_output]
+                outputs=[grafica_output, recomendacion_output]
             )
             
             datos_historicos.change(
-                generar_grafica,
+                actualizar_grafica_y_recomendacion,
                 inputs=[datos_historicos, pronosticos_globales, tipo_grafica, tipo_cetes],
-                outputs=[grafica_output]
+                outputs=[grafica_output, recomendacion_output]
             )
             
             pronosticos_globales.change(
-                generar_grafica,
+                actualizar_grafica_y_recomendacion,
                 inputs=[datos_historicos, pronosticos_globales, tipo_grafica, tipo_cetes],
-                outputs=[grafica_output]
+                outputs=[grafica_output, recomendacion_output]
             )
 
 if __name__ == "__main__":
